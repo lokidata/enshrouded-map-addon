@@ -71,3 +71,49 @@ def test_unfiltered_backup_warning_is_in_the_page(client: TestClient) -> None:
     js = client.get("/addon/app.js").text
     assert "confirm_full" in js and "backup_filtered" in js
     assert "tous les fichiers" in client.get("/addon/app.js").text + client.get("/addon/").text
+
+
+def test_chestsort_card_and_endpoints(client: TestClient) -> None:
+    html = client.get("/addon/").text
+    assert "Catégories de coffres" in html
+    for ident in (
+        "chestsort",
+        "cs-list",
+        "cs-words",
+        "cs-items",
+        "cs-filter",
+        "cs-diff",
+        "cs-save",
+        "cs-bak",
+    ):
+        assert f'id="{ident}"' in html, ident
+    assert re.search(r'<pre[^>]*id="cs-diff"', html)
+    assert re.search(r'<button[^>]*id="cs-save"[^>]*disabled', html)
+    assert re.search(r'<section id="chestsort" hidden', html)
+    js = client.get("/addon/chestsort.js").text
+    for needle in (
+        "/chestsort/preview",
+        "/chestsort/backups",
+        "/chestsort/restore",
+        "/chestsort",
+        "base_hash",
+        "confirm: true",
+        "Le mod recharge le fichier en quelques secondes",
+        "changed_elsewhere",
+    ):
+        assert needle in js, needle
+    assert "me.chestsort" in client.get("/addon/app.js").text
+    assert "Aperçu des changements" in html
+    assert "J'ai relu les changements" in js
+    assert 'src="chestsort.js"' in html
+
+
+def test_chestsort_every_reason_has_a_french_message(client: TestClient) -> None:
+    js = client.get("/addon/chestsort.js").text
+    for reason in (
+        "changed_elsewhere", "too_large", "file_invalid", "backup_failed", "verify_failed",
+        "rollback_failed", "invalid_backup_name", "unknown_backup", "invalid_content",
+        "confirmation_required", "pelican_unavailable", "pelican_denied",
+        "pelican_not_found", "pelican_timeout", "forbidden", "busy",
+    ):  # fmt: skip
+        assert reason in js or reason in client.get("/addon/app.js").text, reason
