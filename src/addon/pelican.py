@@ -91,13 +91,22 @@ class PelicanClient:
             log.warning("pelican_error kind=%s status=%s detail=%r", kind, status, detail)
 
     async def _request(
-        self, method: str, suffix: str, body: dict[str, Any] | None = None
+        self,
+        method: str,
+        suffix: str,
+        body: dict[str, Any] | None = None,
+        *,
+        params: dict[str, str] | None = None,
+        content: bytes | None = None,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         try:
             resp = await self._client.request(
                 method,
                 self._base + suffix,
-                headers=self._headers,
+                headers=self._headers | (headers or {}),
+                params=params,
+                content=content,
                 json=body,
                 timeout=self._timeout,
                 follow_redirects=False,
@@ -139,6 +148,39 @@ class PelicanClient:
 
     async def power(self, signal: Literal["start", "stop", "restart"]) -> None:
         await self._request("POST", "/power", {"signal": signal})
+
+    async def read_file(self, path: str) -> str:
+        resp = await self._request("GET", "/files/contents", params={"file": path})
+        return resp.text
+
+    async def write_file(self, path: str, text: str) -> None:
+        await self._request(
+            "POST",
+            "/files/write",
+            params={"file": path},
+            content=text.encode("utf-8"),
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+        )
+
+    async def list_files(self, directory: str) -> list[str]:
+        resp = await self._request("GET", "/files/list", params={"directory": directory})
+        try:
+            data = resp.json()
+        except ValueError:
+            raise self._bad() from None
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise self._bad()
+        names: list[str] = []
+        for row in rows:
+            a = row.get("attributes") if isinstance(row, dict) else None
+            if not isinstance(a, dict) or not isinstance(a.get("name"), str):
+                raise self._bad()
+            if not isinstance(a.get("is_file"), bool):
+                raise self._bad()
+            if a["is_file"]:
+                names.append(a["name"])
+        return names
 
     async def list_backups(self) -> list[Backup]:
         data = await self._json("GET", "/backups")
