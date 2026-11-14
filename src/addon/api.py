@@ -1,7 +1,6 @@
 """HTTP API: identity relay, access control, status, journal, power, backups, chestsort."""
 
 import asyncio
-import json
 import logging
 import posixpath
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -21,6 +20,7 @@ from starlette.types import Scope
 from addon import chestsort
 from addon.config import Settings, get_settings
 from addon.identity import Identity, SiteUnavailable, Unauthenticated, who_am_i
+from addon.jsonsafe import safe_loads
 from addon.pelican import (
     PelicanBadContent,
     PelicanClient,
@@ -293,9 +293,7 @@ async def locked(
 
 @router.post("/power", response_model=None)
 async def power(request: Request, who: Actor) -> dict[str, Any] | JSONResponse:
-    raw: Any = None
-    with suppress(ValueError):  # bad JSON: refused below as invalid_request, and journalled
-        raw = json.loads(await request.body())
+    raw = await small_body(request, who, "power")  # bad JSON: refused below, journalled
     sig = raw.get("signal") if isinstance(raw, dict) else None
     # only a short word reaches the journal, never arbitrary input
     target = sig if isinstance(sig, str) and sig.isalpha() and len(sig) <= 16 else "invalid"
@@ -336,9 +334,7 @@ async def list_backups(request: Request, who: Reader) -> list[dict[str, Any]]:
 
 @router.post("/backups", response_model=None)
 async def create_backup(request: Request, who: Actor) -> dict[str, Any] | JSONResponse:
-    raw: Any = None
-    with suppress(ValueError):  # no or bad body: only matters when the backup is unfiltered
-        raw = json.loads(await request.body())
+    raw = await small_body(request, who, "backup")  # only matters when unfiltered
     confirmed = isinstance(raw, dict) and raw.get("confirm_full") is True
 
     async def run() -> dict[str, Any]:
@@ -384,7 +380,7 @@ def chestsort_path(request: Request) -> str:
 ChestPath = Annotated[str, Depends(chestsort_path)]
 
 
-async def read_json(request: Request, model: type[Any]) -> Any:
+async def read_body(request: Request) -> bytes:
     """Body refused over MAX_BYTES while streaming, before any parsing."""
     chunks, size = [], 0
     async for chunk in request.stream():
@@ -392,8 +388,25 @@ async def read_json(request: Request, model: type[Any]) -> Any:
         if size > MAX_BYTES:
             raise Refused(413, "too_large")
         chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def small_body(request: Request, who: Identity, action: str) -> Any:
+    """Optional JSON body of power/backups: refused (journalled) over the limit, depth-checked."""
     try:
-        return model.model_validate(json.loads(b"".join(chunks)))
+        body = await read_body(request)
+    except Refused as r:
+        request.app.state.store.log(who.username, action, "invalid", r.journal)
+        raise HTTPException(r.code, r.reason) from r
+    with suppress(ValueError):  # bad or too deep JSON: handled by the callers as no/invalid body
+        return safe_loads(body)
+    return None
+
+
+async def read_json(request: Request, model: type[Any]) -> Any:
+    body = await read_body(request)
+    try:
+        return model.model_validate(safe_loads(body))
     # ValidationError is a ValueError; RecursionError: a deeply nested body
     except (ValueError, ValidationError, RecursionError):
         raise Refused(422, "invalid_request") from None

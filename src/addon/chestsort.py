@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from addon.jsonsafe import safe_loads
+
 _MAX_CATEGORIES = 200
 _MAX_NAME = 60
 _MAX_STR = 200
@@ -31,7 +33,7 @@ class Report:
 
 def parse(text: str) -> dict[str, Any]:
     try:
-        obj = json.loads(text)
+        obj = safe_loads(text)
     except ValueError as e:
         raise ChestsortError([f"JSON invalide : {e}"]) from e
     if not isinstance(obj, dict):

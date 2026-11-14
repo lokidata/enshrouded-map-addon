@@ -1288,3 +1288,16 @@ def test_preview_diff_runs_off_the_event_loop(
     monkeypatch.setattr(chestsort, "unified_diff", spy)
     assert post(cs, "/chestsort/preview", json={"categories": NEW_CATS}).status_code == 200
     assert seen == ["thread"]
+
+
+def test_deep_body_on_power_and_backups_is_refused_not_a_crash(client: TestClient) -> None:
+    deep = "[" * 100_000 + "]" * 100_000
+    resp = post(client, "/power", content='{"signal": ' + deep + "}")
+    assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_request"})
+    # backups: a bad body only matters when the backup is unfiltered; it must not crash
+    assert post(client, "/backups", content=deep).status_code == 200
+
+
+def test_oversized_body_on_power_is_413(client: TestClient) -> None:
+    resp = post(client, "/power", content=b" " * 1_100_000)
+    assert (resp.status_code, resp.json()) == (413, {"detail": "too_large"})

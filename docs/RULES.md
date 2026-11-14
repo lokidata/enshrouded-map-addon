@@ -136,3 +136,8 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 - Chestsort: `.bak-` copies accumulate (the key has no `file.delete`); clean them in the panel's file manager. Only the 20 newest are listed.
 - Chestsort: the mod reports its own parse errors only in `shroudlink.log`; the page does not show them.
 - Chestsort: `GET` reads the whole file before the 1 MB check; a restore has no diff preview.
+
+## JSON safety
+- Every JSON body and the chestsort file are read with `addon/jsonsafe.py`: the nesting depth is measured first (iteratively, strings skipped) and a document deeper than 40 levels is refused (422 `invalid_request`, or a French error for the file) before `json.loads` runs. Reason: `json.loads` on tens of thousands of nested brackets overflows the C stack and kills the whole process on some Python versions and stack sizes (found when the CI crashed on Python 3.15).
+- The optional bodies of `POST /power` and `POST /backups` are also limited to 1 MB (413 `too_large`, journalled).
+
