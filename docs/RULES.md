@@ -28,6 +28,7 @@ One static page (`/addon/`, HTML + vanilla JS, no build): server name, state, CP
 
 ## Journal rules
 - Kept 1 day (`JOURNAL_DAYS`), purged at startup and on each journal write.
+- Pelican failures are written to the container log (stderr), one warning line per distinct reason and minute: `pelican_error kind=<denied|not_found|unreachable|unavailable|bad_response> status=<http> detail='...'`. `detail` is Pelican's own explanation when it gives one (a `denied` caused by the key's IP restriction shows the refused address), cut to 200 characters on one line; never the key or the request headers.
 - Stored: time, username, action (`access`), target, result, Pelican HTTP status. Status polls (GET `/status`) are not journalled (a poll per viewer would fill it); future Pelican write actions will be.
 - Never stored: file contents, the Pelican key, cookies.
 - Non-administrators get only `at, username, action, target, result`.
@@ -67,7 +68,7 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 
 ## Known gaps
 - Refused writes (missing header, wrong origin, 403) are not journalled.
-- No JSON line on stdout yet (the audit table only).
+- No JSON line on stdout for access changes yet (the audit table only).
 - Without `ALLOWED_ORIGIN`, only the `X-Addon` header protects writes: set it.
 - Pelican response shapes are written from the docs and unverified against a real panel.
 - The Pelican key has no expiry; rotate it by hand.

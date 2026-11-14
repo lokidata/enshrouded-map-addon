@@ -148,3 +148,72 @@ def test_non_finite_or_bad_numbers_are_unavailable(stats_body: str) -> None:
 
     with pytest.raises(PelicanUnavailable):
         call(handler)
+
+
+def refuse(detail: str) -> Any:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"errors": [{"detail": detail}]})
+
+    return handler
+
+
+def test_failure_is_logged_with_reason_and_refused_ip_but_not_the_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    detail = "This IP address (172.22.0.1) does not have permission to access the API"
+    with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(PelicanDenied):
+        call(refuse(detail))
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "denied" in text and "403" in text and "172.22.0.1" in text
+    assert "pacc_TEST" not in text
+
+
+def test_unreachable_is_logged_with_the_error_type(caplog: pytest.LogCaptureFixture) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(PelicanUnavailable):
+        call(handler)
+    assert "ConnectTimeout" in " ".join(r.getMessage() for r in caplog.records)
+
+
+def test_detail_is_single_line_and_truncated(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(PelicanDenied):
+        call(refuse("line1\nline2\r" + "x" * 500))
+    msg = caplog.records[0].getMessage()
+    assert "\n" not in msg and "\r" not in msg and len(msg) < 400
+
+
+def test_same_failure_is_logged_once_per_minute(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [1000.0]
+    monkeypatch.setattr("addon.pelican.time.monotonic", lambda: now[0])
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(refuse("a"))) as client:
+            pelican = PelicanClient(SETTINGS, client)
+            for _ in range(3):  # a 15 s poll from several viewers
+                with pytest.raises(PelicanDenied):
+                    await pelican.status()
+            now[0] += 61
+            with pytest.raises(PelicanDenied):
+                await pelican.status()
+
+    with caplog.at_level("WARNING", logger="addon.pelican"):
+        asyncio.run(run())
+    assert len(caplog.records) == 2
+
+
+def test_bad_resources_shape_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            {"attributes": {"current_state": "running"}}
+            if "resources" in str(request.url)
+            else INFO
+        )
+        return httpx.Response(200, json=body)
+
+    with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(PelicanUnavailable):
+        call(handler)
+    assert "bad_response" in caplog.records[0].getMessage()
