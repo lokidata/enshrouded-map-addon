@@ -38,3 +38,30 @@ def test_no_external_url_and_no_innerhtml(client: TestClient) -> None:
         assert not re.search(r"(https?:)?//[a-z0-9.-]+\.[a-z]{2,}", text, re.I), path
         assert "innerHTML" not in text
     assert client.get("/addon/api/me").status_code == 401  # API untouched
+
+
+def test_page_has_actions_and_backups_ui(client: TestClient) -> None:
+    js = client.get("/addon/app.js").text
+    for needle in ("/power", "/backups", "X-Addon", "confirm: true"):
+        assert needle in js
+    html = client.get("/addon/").text
+    assert "<dialog" in html and "J'ai prévenu les joueurs" in html
+    for ident in ("actions", "backups", "b-create"):
+        assert f'id="{ident}"' in html
+
+
+def test_action_buttons_start_disabled(client: TestClient) -> None:
+    html = client.get("/addon/").text
+    for ident in ("act-start", "act-stop", "act-restart", "b-create"):
+        tag = re.search(rf'<button[^>]*id="{ident}"[^>]*>', html)
+        assert tag and " disabled" in tag.group(0), ident
+
+
+def test_ui_review_rules(client: TestClient) -> None:
+    js = client.get("/addon/app.js").text
+    for reason in ("busy:", "pelican_timeout:"):
+        assert reason in js
+    assert 'state = "";' in js  # a failed status read leaves the state unknown
+    assert "b.completed_at === null" in js  # 'en cours' until completed_at is set
+    assert "loadJournal()" in js.split("async function act")[1].split("const power")[0]
+    assert 'id="b-err"' in client.get("/addon/").text  # list errors cleared on success

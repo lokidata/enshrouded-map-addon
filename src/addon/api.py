@@ -1,23 +1,34 @@
-"""HTTP API: identity relay, access control, status, journal."""
+"""HTTP API: identity relay, access control, status, journal, power and backups."""
 
+import asyncio
+import json
+import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from starlette.responses import Response
+from pydantic import BaseModel, ValidationError
+from starlette.responses import JSONResponse, Response
 from starlette.types import Scope
 
 from addon.config import Settings, get_settings
 from addon.identity import Identity, SiteUnavailable, Unauthenticated, who_am_i
-from addon.pelican import PelicanClient, PelicanDenied, PelicanNotFound, PelicanUnavailable
+from addon.pelican import (
+    PelicanClient,
+    PelicanDenied,
+    PelicanNotFound,
+    PelicanRejected,
+    PelicanUnavailable,
+)
 from addon.store import Level, Store
+from addon.throttle import Throttle
 
+log = logging.getLogger("addon.api")
 PUBLIC_JOURNAL = ("at", "username", "action", "target", "result")
 PELICAN_ERRORS: dict[type[Exception], tuple[str, int | None]] = {
     PelicanDenied: ("pelican_denied", 403),
@@ -26,8 +37,33 @@ PELICAN_ERRORS: dict[type[Exception], tuple[str, int | None]] = {
 }
 
 
+POWER_WINDOW = 30  # seconds, global (not per user)
+BACKUP_WINDOW = 300
+LOCK_WAIT = 5  # seconds a second action waits for the lock before `busy`
+ACTION_TIMEOUT = 25  # seconds for the whole locked section (status read + Pelican call)
+NEEDS_STATE = {"start": "offline", "stop": "running", "restart": "running"}
+
+
 class AccessBody(BaseModel):
     level: Level | None  # required; null revokes
+
+
+class PowerBody(BaseModel):
+    signal: Literal["start", "stop", "restart"]
+    confirm: Any = False  # checked with `is True`: the string "true" is refused
+
+
+class Refused(Exception):
+    def __init__(
+        self,
+        code: int,
+        reason: str,
+        status: int | None = None,
+        retry_after: int | None = None,
+        journal: str | None = None,  # journal result when it differs from the response detail
+    ) -> None:
+        self.code, self.reason, self.status, self.retry_after = code, reason, status, retry_after
+        self.journal = journal or reason
 
 
 def check_write(request: Request) -> None:
@@ -70,7 +106,14 @@ def require_admin(who: Current) -> Identity:
     return who
 
 
+def require_action(request: Request, who: Current) -> Identity:
+    if level_of(request, who) != "action":
+        raise HTTPException(403, "forbidden")
+    return who
+
+
 Reader = Annotated[Identity, Depends(require_read)]
+Actor = Annotated[Identity, Depends(require_action)]
 Admin = Annotated[Identity, Depends(require_admin)]
 router = APIRouter(prefix="/addon/api", dependencies=[Depends(check_write)])
 
@@ -149,6 +192,129 @@ async def set_access(
     return {"user_key": user_key, "username": username, "level": body.level}
 
 
+def pelican_refusal(exc: Exception) -> Refused:
+    if isinstance(exc, PelicanRejected):
+        return Refused(409, "pelican_rejected", exc.args[0] if exc.args else None)
+    detail, status = PELICAN_ERRORS[type(exc)]
+    return Refused(502, detail, status)
+
+
+async def journalled(
+    request: Request, who: Identity, action: str, target: str, run: Any
+) -> dict[str, Any] | JSONResponse:
+    """Run one write, journal its outcome (never bodies or secrets), map refusals to HTTP."""
+    store: Store = request.app.state.store
+    try:
+        result: dict[str, Any] = await run()
+    except Refused as r:
+        store.log(who.username, action, target, r.journal, r.status)
+        if r.retry_after is not None:
+            return JSONResponse(
+                {"detail": r.reason, "retry_after": r.retry_after},
+                status_code=429,
+                headers={"Retry-After": str(r.retry_after)},
+            )
+        raise HTTPException(r.code, r.reason) from r
+    except Exception:  # a bug must not hide an attempt that may have reached Pelican
+        log.exception("internal_error action=%s", action)  # target is journalled, not logged
+        store.log(who.username, action, target, "internal_error")
+        return JSONResponse({"detail": "internal_error"}, status_code=500)
+    store.log(who.username, action, target, "ok")
+    return result
+
+
+async def throttled(request: Request, key: str, seconds: int, call: Any) -> Any:
+    """Under the lock: refuse inside the window; a call that may have applied starts it."""
+    throttle: Throttle = request.app.state.throttle
+    wait = throttle.retry_after(key, seconds)
+    if wait is not None:
+        raise Refused(429, "rate_limited", retry_after=wait)
+    try:
+        result = await call()
+    except (PelicanDenied, PelicanNotFound, PelicanUnavailable, PelicanRejected) as exc:
+        if isinstance(exc, PelicanUnavailable):  # timeout or 5xx: Pelican may have acted
+            throttle.mark(key)
+        raise pelican_refusal(exc) from exc
+    throttle.mark(key)
+    return result
+
+
+async def locked(request: Request, key: str, work: Any) -> Any:
+    """One action at a time, bounded: wait LOCK_WAIT for the lock, ACTION_TIMEOUT inside it."""
+    lock: asyncio.Lock = request.app.state.action_lock
+    try:
+        await asyncio.wait_for(lock.acquire(), LOCK_WAIT)
+    except TimeoutError:
+        raise Refused(409, "busy") from None
+    try:
+        async with asyncio.timeout(ACTION_TIMEOUT):
+            return await work()
+    except TimeoutError:
+        request.app.state.throttle.mark(key)  # outcome unknown: Pelican may have acted
+        raise Refused(504, "pelican_timeout", journal="timeout") from None
+    finally:
+        lock.release()
+
+
+@router.post("/power", response_model=None)
+async def power(request: Request, who: Actor) -> dict[str, Any] | JSONResponse:
+    raw: Any = None
+    with suppress(ValueError):  # bad JSON: refused below as invalid_request, and journalled
+        raw = json.loads(await request.body())
+    sig = raw.get("signal") if isinstance(raw, dict) else None
+    # only a short word reaches the journal, never arbitrary input
+    target = sig if isinstance(sig, str) and sig.isalpha() and len(sig) <= 16 else "invalid"
+
+    async def run() -> dict[str, Any]:
+        try:
+            body = PowerBody.model_validate(raw)
+        except ValidationError:
+            raise Refused(422, "invalid_request") from None
+        if body.signal != "start" and body.confirm is not True:
+            raise Refused(422, "confirmation_required")
+        pelican: PelicanClient = request.app.state.pelican
+
+        async def work() -> None:
+            try:
+                state = (await pelican.status()).state
+            except (PelicanDenied, PelicanNotFound, PelicanUnavailable) as exc:
+                raise pelican_refusal(exc) from exc
+            if state != NEEDS_STATE[body.signal]:
+                raise Refused(409, "wrong_state")
+            await throttled(request, "power", POWER_WINDOW, lambda: pelican.power(body.signal))
+
+        await locked(request, "power", work)
+        return {"signal": body.signal, "result": "ok"}
+
+    return await journalled(request, who, "power", target, run)
+
+
+@router.get("/backups")
+async def list_backups(request: Request, who: Reader) -> list[dict[str, Any]]:
+    try:
+        rows = await request.app.state.pelican.list_backups()
+    except (PelicanDenied, PelicanNotFound, PelicanUnavailable) as exc:
+        detail, _ = PELICAN_ERRORS[type(exc)]
+        raise HTTPException(502, detail) from exc
+    return [asdict(b) for b in rows]
+
+
+@router.post("/backups", response_model=None)
+async def create_backup(request: Request, who: Actor) -> dict[str, Any] | JSONResponse:
+    async def run() -> dict[str, Any]:
+        backup = await locked(
+            request,
+            "backup",
+            lambda: throttled(
+                request, "backup", BACKUP_WINDOW, request.app.state.pelican.create_backup
+            ),
+        )
+        # None: created (2xx) but the body could not be parsed; the list shows it later
+        return {"backup": None} if backup is None else asdict(backup)
+
+    return await journalled(request, who, "backup", "create", run)
+
+
 CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
 
@@ -171,6 +337,8 @@ def create_app(
             app.state.store = Store(cfg.db_path, cfg.journal_days)
             app.state.http = http
             app.state.pelican = PelicanClient(cfg, http)
+            app.state.throttle = Throttle()
+            app.state.action_lock = asyncio.Lock()  # one power or backup request at a time
             yield
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)

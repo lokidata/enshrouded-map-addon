@@ -1,5 +1,8 @@
+import asyncio
+import json
 import logging
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -7,8 +10,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from addon import api
 from addon.api import create_app
 from addon.config import Settings
+from addon.throttle import Throttle
 
 KEY = "pacc_TEST"
 ADMIN = {"id": 1, "username": "root", "is_admin": True, "created_at": "2026-01-01T00:00:00"}
@@ -24,6 +29,15 @@ STATS = {
     }
 }
 WRITE = {"X-Addon": "1", "Origin": "https://site.example.test"}
+BACKUP = {
+    "uuid": "u1",
+    "name": "b1",
+    "bytes": 10,
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "completed_at": None,
+    "is_successful": None,
+    "is_locked": False,
+}
 
 
 class Fake:
@@ -36,13 +50,34 @@ class Fake:
         self.pelican_status = 200
         self.pelican_calls = 0
         self.users_cookies: list[str | None] = []
+        self.state = "running"
+        self.power_status = 204
+        self.signals: list[str] = []
+        self.backup_status = 200
+        self.backup_body: Any = {"attributes": BACKUP}
+        self.backups_created = 0
+        self.delay = 0.0
 
-    def handle(self, request: httpx.Request) -> httpx.Response:
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(self.delay)  # lets concurrent requests interleave
+        return self.respond(request)
+
+    def respond(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "panel.example.test":
             self.pelican_calls += 1
+            path = request.url.path
+            if path.endswith("/power"):
+                self.signals.append(json.loads(request.content)["signal"])
+                return httpx.Response(self.power_status)
+            if path.endswith("/backups") and request.method == "POST":
+                self.backups_created += 1
+                return httpx.Response(self.backup_status, json=self.backup_body)
             if self.pelican_status != 200:
                 return httpx.Response(self.pelican_status)
-            return httpx.Response(200, json=STATS if request.url.path.endswith("s") else INFO)
+            if path.endswith("/backups"):
+                return httpx.Response(200, json={"data": [{"attributes": BACKUP}]})
+            stats = {"attributes": {**STATS["attributes"], "current_state": self.state}}
+            return httpx.Response(200, json=stats if path.endswith("/resources") else INFO)
         if self.site_down:
             return httpx.Response(500)
         cookie = request.headers.get("cookie", "")
@@ -275,3 +310,317 @@ def test_site_users_without_created_at_is_503(client: TestClient, fake: Fake) ->
         fake.users = [{"id": 7, "username": "alice", "created_at": created}]
         assert client.get("/addon/api/access", headers=as_("admin")).status_code == 503
         assert grant(client, f"7:{created}", "read").status_code == 503
+
+
+def post(client: TestClient, path: str, who: str = "admin", **kw: Any) -> httpx.Response:
+    resp: httpx.Response = client.post(f"/addon/api{path}", headers=as_(who, WRITE), **kw)
+    return resp
+
+
+def actions(client: TestClient) -> list[tuple[Any, ...]]:
+    rows = client.get("/addon/api/journal", headers=as_("admin")).json()
+    keep = ("power", "backup")
+    return [
+        (r["username"], r["action"], r["target"], r["result"], r["pelican_status"])
+        for r in reversed(rows)
+        if r["action"] in keep
+    ]
+
+
+def test_read_and_unlisted_users_cannot_act(client: TestClient, fake: Fake) -> None:
+    grant(client, ALICE_KEY, "read")
+    for who in ("alice", "bob"):
+        assert post(client, "/power", who, json={"signal": "start"}).status_code == 403
+        assert post(client, "/backups", who).status_code == 403
+    assert client.get("/addon/api/backups", headers=as_("bob")).status_code == 403
+    assert actions(client) == [] and fake.pelican_calls == 0
+
+
+def test_writes_need_the_csrf_header(client: TestClient, fake: Fake) -> None:
+    headers = as_("admin", {"Origin": "https://site.example.test"})
+    assert (
+        client.post("/addon/api/power", json={"signal": "start"}, headers=headers).status_code
+        == 403
+    )
+    assert client.post("/addon/api/backups", headers=headers).status_code == 403
+    assert fake.pelican_calls == 0
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [{"json": {"signal": "kill"}}, {}, {"json": {}}, {"content": b"not json"}, {"json": ["stop"]}],
+)
+def test_invalid_power_request_is_422_journalled(
+    client: TestClient, fake: Fake, kw: dict[str, Any]
+) -> None:
+    resp = post(client, "/power", **kw)
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": "invalid_request"}
+    target = "kill" if kw.get("json") == {"signal": "kill"} else "invalid"
+    assert actions(client) == [("root", "power", target, "invalid_request", None)]
+    assert fake.pelican_calls == 0
+
+
+def test_power_target_never_journals_raw_input(client: TestClient) -> None:
+    post(client, "/power", json={"signal": "<b>x</b>" * 50})
+    assert actions(client)[0][2] == "invalid"
+
+
+@pytest.mark.parametrize("signal", ["stop", "restart"])
+@pytest.mark.parametrize("extra", [{}, {"confirm": False}, {"confirm": "true"}, {"confirm": 1}])
+def test_stop_and_restart_need_confirm_true(
+    client: TestClient, fake: Fake, signal: str, extra: dict[str, Any]
+) -> None:
+    resp = post(client, "/power", json={"signal": signal, **extra})
+    assert (resp.status_code, resp.json()) == (422, {"detail": "confirmation_required"})
+    assert actions(client) == [("root", "power", signal, "confirmation_required", None)]
+    assert fake.pelican_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("state", "signal"),
+    [
+        ("running", "start"),
+        ("offline", "stop"),
+        ("offline", "restart"),
+        *[
+            (s, sig)
+            for s in ("starting", "stopping", "weird")
+            for sig in ("start", "stop", "restart")
+        ],
+    ],
+)
+def test_wrong_state_is_409_and_nothing_sent(
+    client: TestClient, fake: Fake, state: str, signal: str
+) -> None:
+    fake.state = state
+    resp = post(client, "/power", json={"signal": signal, "confirm": True})
+    assert (resp.status_code, resp.json()) == (409, {"detail": "wrong_state"})
+    assert fake.signals == []
+    assert actions(client) == [("root", "power", signal, "wrong_state", None)]
+
+
+@pytest.mark.parametrize("power_status", [200, 204])
+def test_power_ok_for_action_user(client: TestClient, fake: Fake, power_status: int) -> None:
+    grant(client, ALICE_KEY, "action")
+    fake.power_status = power_status
+    resp = post(client, "/power", "alice", json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (200, {"signal": "stop", "result": "ok"})
+    assert fake.signals == ["stop"]
+    assert actions(client) == [("alice", "power", "stop", "ok", None)]
+
+
+def test_start_when_offline_needs_no_confirm(client: TestClient, fake: Fake) -> None:
+    fake.state = "offline"
+    assert post(client, "/power", json={"signal": "start"}).status_code == 200
+    assert fake.signals == ["start"]
+
+
+def test_power_is_rate_limited_globally_for_30_s(client: TestClient, fake: Fake) -> None:
+    now = [100.0]
+    client.app.state.throttle = Throttle(lambda: now[0])  # type: ignore[attr-defined]
+    grant(client, ALICE_KEY, "action")
+    assert post(client, "/power", json={"signal": "restart", "confirm": True}).status_code == 200
+    now[0] += 29.5
+    resp = post(client, "/power", "alice", json={"signal": "stop", "confirm": True})
+    assert resp.status_code == 429
+    assert resp.headers["Retry-After"] == "1"
+    assert resp.json() == {"detail": "rate_limited", "retry_after": 1}
+    now[0] += 0.5
+    assert (
+        post(client, "/power", "alice", json={"signal": "stop", "confirm": True}).status_code == 200
+    )
+    assert fake.signals == ["restart", "stop"]
+    assert [a[3] for a in actions(client)] == ["ok", "rate_limited", "ok"]
+
+
+@pytest.mark.parametrize(
+    ("code", "detail", "pstatus"),
+    [(403, "pelican_denied", 403), (404, "pelican_not_found", 404)],
+)
+def test_refused_power_is_502_and_does_not_start_the_window(
+    client: TestClient, fake: Fake, code: int, detail: str, pstatus: int | None
+) -> None:
+    fake.power_status = code
+    resp = post(client, "/power", json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (502, {"detail": detail})
+    fake.power_status = 204
+    assert post(client, "/power", json={"signal": "stop", "confirm": True}).status_code == 200
+    assert actions(client) == [
+        ("root", "power", "stop", detail, pstatus),
+        ("root", "power", "stop", "ok", None),
+    ]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_unavailable_write_may_have_applied_and_starts_the_window(
+    client: TestClient, fake: Fake, path: str
+) -> None:
+    fake.power_status = fake.backup_status = 500
+    body = {"signal": "stop", "confirm": True}
+    resp = post(client, path, json=body)
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    fake.power_status, fake.backup_status = 204, 200
+    assert post(client, path, json=body).status_code == 429
+    target = "stop" if path == "/power" else "create"
+    assert [a[2:] for a in actions(client)] == [
+        (target, "pelican_unavailable", None),
+        (target, "rate_limited", None),
+    ]
+
+
+@pytest.mark.parametrize("code", [400, 409, 422])
+def test_get_refusal_codes_are_502_unavailable(client: TestClient, fake: Fake, code: int) -> None:
+    fake.pelican_status = code
+    for path in ("/status", "/backups"):
+        resp = client.get(f"/addon/api{path}", headers=as_("admin"))
+        assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    resp = post(client, "/power", json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    assert fake.signals == []
+    assert actions(client) == [("root", "power", "stop", "pelican_unavailable", None)]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_unexpected_error_is_journalled_and_500(
+    client: TestClient, fake: Fake, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def boom(*_: Any) -> None:
+        raise RuntimeError("bug")
+
+    pelican = client.app.state.pelican  # type: ignore[attr-defined]
+    monkeypatch.setattr(pelican, "power", boom)
+    monkeypatch.setattr(pelican, "create_backup", boom)
+    resp = post(client, path, json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (500, {"detail": "internal_error"})
+    assert [a[3] for a in actions(client)] == ["internal_error"]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_second_request_waiting_too_long_for_the_lock_is_busy(
+    client: TestClient, fake: Fake, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "LOCK_WAIT", 0.01)
+    fake.delay = 0.2
+
+    def send(_: int) -> int:
+        return post(client, path, json={"signal": "stop", "confirm": True}).status_code
+
+    with ThreadPoolExecutor(2) as pool:
+        codes = sorted(pool.map(send, range(2)))
+    assert codes == [200, 409]
+    assert sorted(a[3] for a in actions(client)) == ["busy", "ok"]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_slow_panel_is_504_and_starts_the_window(
+    client: TestClient, fake: Fake, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "ACTION_TIMEOUT", 0.05)
+    fake.delay = 0.2
+    body = {"signal": "stop", "confirm": True}
+    resp = post(client, path, json=body)
+    assert (resp.status_code, resp.json()) == (504, {"detail": "pelican_timeout"})
+    fake.delay = 0
+    assert post(client, path, json=body).status_code == 429  # the lock was released
+    assert [a[3] for a in actions(client)] == ["timeout", "rate_limited"]
+
+
+def test_status_failure_before_power_is_502_and_journalled(client: TestClient, fake: Fake) -> None:
+    fake.pelican_status = 403
+    resp = post(client, "/power", json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_denied"})
+    assert fake.signals == []
+    assert actions(client) == [("root", "power", "stop", "pelican_denied", 403)]
+
+
+def test_power_rejected_is_409(client: TestClient, fake: Fake) -> None:
+    fake.power_status = 409
+    resp = post(client, "/power", json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (409, {"detail": "pelican_rejected"})
+    assert actions(client) == [("root", "power", "stop", "pelican_rejected", 409)]
+
+
+def test_two_concurrent_stops_send_one_power_call(client: TestClient, fake: Fake) -> None:
+    fake.delay = 0.05
+
+    def stop() -> int:
+        return post(client, "/power", json={"signal": "stop", "confirm": True}).status_code
+
+    with ThreadPoolExecutor(2) as pool:
+        codes = sorted(pool.map(lambda _: stop(), range(2)))
+    assert codes == [200, 429]
+    assert fake.signals == ["stop"]
+
+
+def test_backups_list_for_readers(client: TestClient, fake: Fake) -> None:
+    grant(client, ALICE_KEY, "read")
+    resp = client.get("/addon/api/backups", headers=as_("alice"))
+    assert (resp.status_code, resp.json()) == (200, [BACKUP])
+    fake.pelican_status = 500
+    resp = client.get("/addon/api/backups", headers=as_("alice"))
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    assert actions(client) == []
+
+
+def test_backup_create_ok_then_rate_limited_for_300_s(client: TestClient, fake: Fake) -> None:
+    now = [100.0]
+    client.app.state.throttle = Throttle(lambda: now[0])  # type: ignore[attr-defined]
+    resp = post(client, "/backups")
+    assert (resp.status_code, resp.json()) == (200, BACKUP)
+    now[0] += 299.5
+    resp = post(client, "/backups")
+    assert (resp.status_code, resp.headers["Retry-After"]) == (429, "1")
+    now[0] += 0.5
+    assert post(client, "/backups").status_code == 200
+    assert fake.backups_created == 2
+    assert actions(client) == [
+        ("root", "backup", "create", "ok", None),
+        ("root", "backup", "create", "rate_limited", None),
+        ("root", "backup", "create", "ok", None),
+    ]
+
+
+def test_backup_created_with_unparsable_body_is_ok_and_starts_the_window(
+    client: TestClient, fake: Fake
+) -> None:
+    fake.backup_status, fake.backup_body = 201, {}
+    resp = post(client, "/backups")
+    assert (resp.status_code, resp.json()) == (200, {"backup": None})
+    assert post(client, "/backups").status_code == 429
+    assert fake.backups_created == 1
+    assert [a[3] for a in actions(client)] == ["ok", "rate_limited"]
+
+
+def test_backup_and_power_windows_are_independent(client: TestClient, fake: Fake) -> None:
+    assert post(client, "/backups").status_code == 200
+    assert post(client, "/power", json={"signal": "stop", "confirm": True}).status_code == 200
+
+
+def test_backup_rejected_is_409_and_does_not_start_the_window(
+    client: TestClient, fake: Fake
+) -> None:
+    fake.backup_status = 400
+    resp = post(client, "/backups")
+    assert (resp.status_code, resp.json()) == (409, {"detail": "pelican_rejected"})
+    fake.backup_status = 201
+    assert post(client, "/backups").status_code == 200
+    assert actions(client) == [
+        ("root", "backup", "create", "pelican_rejected", 400),
+        ("root", "backup", "create", "ok", None),
+    ]
+
+
+def test_key_never_in_action_responses_or_logs(
+    client: TestClient, fake: Fake, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    bodies = []
+    for code in (204, 400, 403, 500):
+        fake.power_status = fake.backup_status = code
+        bodies.append(post(client, "/power", json={"signal": "stop", "confirm": True}).text)
+        bodies.append(post(client, "/backups").text)
+    bodies.append(client.get("/addon/api/backups", headers=as_("admin")).text)
+    bodies.append(client.get("/addon/api/journal", headers=as_("admin")).text)
+    assert all(KEY not in b for b in bodies)
+    assert all(KEY not in r.getMessage() and KEY not in str(r.args) for r in caplog.records)
