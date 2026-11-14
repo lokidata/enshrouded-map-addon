@@ -25,6 +25,9 @@ Buttons Start, Stop, Restart start disabled, are enabled from the polled state (
 ### Sauvegardes card
 The backup list (name, size, date, status; `en cours` while `completed_at` is null whatever `is_successful` says, `échec` only when `completed_at` is set and `is_successful` is false) for everyone with access; a list load error shows under the button and is cleared by the next successful load. The "Créer une sauvegarde" button (and its result message) is shown to `action` users only; it starts disabled, is enabled once the page has loaded (it depends on the level only) and is disabled while a request is in flight.
 
+### Catégories de coffres card (only when `me.chestsort` is true)
+Shown only when `CHESTSORT_FILE` is set. Structured editor, French: list of categories; the selected one shows `words` and `items` (one per line, items with a counter and a filter box); add, rename, delete (delete asks a dialog). Level `read`: read-only view. Level `action`: "Aperçu des changements" calls `/preview` and shows errors, warnings and the diff; "Enregistrer" is enabled only after a preview without error and asks a dialog (checkbox "J'ai relu les changements", sends `confirm: true`); after a save it shows the backup name and that the mod reloads the file in a few seconds. "Restaurer" lists the `.bak-` copies and asks the same dialog; there is no diff preview on a restore. 409 `changed_elsewhere` asks to reload; every error reason is shown in French.
+
 ## Power and backup rules
 - Signals: `start`, `stop`, `restart` only (`kill` and anything else: 422 `invalid_request`, never sent). The body is JSON `{"signal": ..., "confirm": ...}`; unparsable JSON, an empty body or an unknown signal is `invalid_request`.
 - `stop` and `restart` need `confirm` to be exactly boolean `true` (the string `"true"` or `false` gives 422 `confirmation_required`); the UI checkbox is not the only guard. `start` needs none.
@@ -36,6 +39,18 @@ The backup list (name, size, date, status; `en cours` while `completed_at` is nu
 - An unexpected error inside `POST /power` or `POST /backups` is journalled `internal_error` and answers 500 `internal_error` (traceback in the container log).
 - Success: `POST /power` returns `{"signal", "result": "ok"}`; `POST /backups` returns the created backup (`uuid`, `name`, `bytes`, `created_at`, `completed_at`, `is_successful`, `is_locked`), or `{"backup": null}` when Pelican answered 2xx with a body that cannot be parsed (logged `bad_response`; still a success: journalled `ok`, window started).
 - Not offered: backup restore, delete, download or lock; `kill`.
+
+## Chestsort editor rules
+- Off unless `CHESTSORT_FILE` is set: every `/chestsort` route is 404 and `GET /me` has `chestsort: false`. The path comes from the setting only, never from a request. It must start with `/`, not end with `/`, no `..`, no `\`, no control character, at most 200 characters (else the start fails).
+- Levels: `read` may use `GET /chestsort` and `GET /chestsort/backups`; `action` also `POST /chestsort/preview`, `PUT /chestsort`, `POST /chestsort/restore`. Others 403.
+- Only `categories` is edited. The rest of the file (`_readme` and any other key) is kept in its order; `other_keys_kept` tells the page there are such keys.
+- Validation (errors refuse the save; the messages are in French): `categories` an object of 1 to 200 categories; name 1 to 60 characters without control characters, unique ignoring case; each category an object with exactly `words` and `items` (unknown or missing key refused); each a list of non-empty strings of at most 200 characters without control characters; `words` at most 100, `items` at most 20000; `_readme` (if present) a list of strings. Warnings (do not block): a name equal to a built-in group (`nourriture`), an empty `items`, a word in two categories.
+- Canonical dump: `json.dumps(ensure_ascii=False, indent=2)`, no trailing newline (the mod writes none, so a save shows no spurious diff). Hash = SHA-256 of the file text. File and request bodies are limited to 1 MB (body: 413 `too_large` while streaming; file: 413 too, but `GET` reads the whole file before the size check).
+- Save pipeline, under the shared action lock and a 10 s window shared by save and restore: read the file; its hash must equal `base_hash` (else 409 `changed_elsewhere`, nothing written); write a copy `<file>.bak-YYYYMMDD-HHMMSS` and read it back (mismatch: 502 `backup_failed`, the new content is never written); write the new content and read it back; on a mismatch, or on 5xx or unreachable Pelican during the write, write the old content back and verify (502 `verify_failed`, journalled `rolled_back`, or `rollback_failed` if that failed too). A new-file write that may have been applied starts the window.
+- `PUT` needs `confirm` exactly `true` (else 422 `confirmation_required`) and no validation error (422 `invalid_content` with `errors`). `POST /restore` needs `confirm: true`, a name that matches `.bak-YYYYMMDD-HHMMSS` of the configured file (else 422 `invalid_backup_name`) and present in the folder listing (else 404 `unknown_backup`); the copy is validated like a save (422 `invalid_content`) and restored byte for byte, after the same backup of the current file, `base_hash` and verify steps. A restore is a new save: the copy it replaces is itself backed up.
+- `GET /chestsort/backups`: the 20 newest names, newest first.
+- Shared lock: waits at most 5 s (409 `busy`), the locked section is bounded to 25 s (504 `pelican_timeout`, window started); inside the 10 s window 429 `rate_limited` with `Retry-After`. The file being invalid JSON: 502 `file_invalid`; Pelican failures 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable`.
+- Journal: action `chestsort`, target `save` or `restore`, result `ok` or the refusal reason (`confirmation_required`, `invalid_request`, `invalid_content`, `invalid_backup_name`, `unknown_backup`, `changed_elsewhere`, `too_large`, `file_invalid`, `backup_failed`, `rolled_back`, `rollback_failed`, `rate_limited`, `busy`, `timeout`, `pelican_*`, `internal_error`). Never the content, the diff or the validation messages. The log has one line on success (`chestsort_written categories= items= bak=`), counts and the backup name only. Previews and reads are not journalled.
 
 ## Access rules
 - Identity of a site user = `"<id>:<created_at>"`. Site ids can be reused (plain SQLite primary key), so the pair is used: a re-created account never inherits access.
@@ -60,7 +75,8 @@ The backup list (name, size, date, status; `en cours` while `completed_at` is nu
 ## Limits
 | What | Value |
 | --- | --- |
-| Pelican calls | GET `/api/client/servers/{id}`, `/resources`, `/backups`; POST `/power`, `/backups`; no redirects |
+| Pelican calls | GET `/api/client/servers/{id}`, `/resources`, `/backups`, `/files/contents?file=`, `/files/list?directory=`; POST `/power`, `/backups`, `/files/write?file=` (raw body, answer 204; verified against the panel); no redirects |
+| Chestsort | 10 s window (save and restore together), 1 MB, 20 copies listed |
 | Power rate limit | 1 per 30 s, global, in memory |
 | Backup creation rate limit | 1 per 300 s, global, in memory |
 | Timeout (Pelican and site) | `PELICAN_TIMEOUT`, 10 s |
@@ -72,11 +88,16 @@ The backup list (name, size, date, status; `en cours` while `completed_at` is nu
 ## API (prefix `/addon/api`)
 | Route | Who | Result |
 | --- | --- | --- |
-| GET `/me` | any logged-in | `username`, `is_admin`, `level` (null = none) |
+| GET `/me` | any logged-in | `username`, `is_admin`, `level` (null = none), `backup_filtered`, `chestsort` |
 | GET `/status` | read+ | server status; 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable` |
 | POST `/power` | action | body `{"signal": "start"\|"stop"\|"restart", "confirm": true}` (`confirm` required for stop and restart); `{"signal", "result": "ok"}` |
 | GET `/backups` | read+ | list of backups (`uuid`, `name`, `bytes`, `created_at`, `completed_at`, `is_successful`, `is_locked`); 502 as `/status` |
 | POST `/backups` | action | body `{}`; the created backup or `{"backup": null}`; 409 `pelican_rejected` when Pelican refuses (e.g. limit) |
+| GET `/chestsort` | read+ | `{categories, other_keys_kept, hash, bytes}`; 404 when off |
+| POST `/chestsort/preview` | action | body `{categories}`; `{errors, warnings, diff, changed}`, writes nothing |
+| PUT `/chestsort` | action | body `{categories, base_hash, confirm: true}`; `{backup, hash}` |
+| GET `/chestsort/backups` | read+ | the 20 newest `.bak-` names |
+| POST `/chestsort/restore` | action | body `{name, base_hash, confirm: true}`; `{backup, hash}` |
 | GET `/journal` | read+ | the 500 newest journal rows, newest first |
 | GET `/access` | admin | site accounts with their level |
 | PUT `/access/{user_key}` | admin | body `{"level": "read"\|"action"\|null}`; null revokes |
@@ -95,6 +116,7 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 | `PELICAN_TIMEOUT` | 10 | seconds |
 | `ALLOW_HTTP` | false | accept an `http://` panel URL |
 | `ALLOWED_ORIGIN` | unset | exact `Origin` required on writes; must look like `https://host[:port]` (scheme, no path; a trailing `/` is stripped; anything else stops the start). A refused write logs `write_refused reason=missing_header\|origin_mismatch` (never the received value) |
+| `CHESTSORT_FILE` | unset (feature off) | path of the mod's categories file from the server root, e.g. `/chestsort_categories.json`; the editor reads and writes it, and its `.bak-` copies next to it |
 | `BACKUP_IGNORED` | unset (then every backup asks for a confirmation, see below) | Pelican ignore list for backups (gitignore style, one pattern per line; `\n` accepted in a one-line variable). Example keeping only the save: `/*\n!/savegame/\n!/savegame/**`. Empty = Pelican's default (everything). Sent as `ignored` (confirmed by the panel's own OpenAPI export: newline separated list, `.gitignore` format) |
 
 ## Known gaps
@@ -108,4 +130,7 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 - Rate limits and the lock are in memory: they reset on restart and assume one worker.
 - No backup restore, delete, download or lock.
 - The Pelican key has no expiry; rotate it by hand.
-- The chestsort editor is delivery 3.
+- Chestsort: the write is not atomic. A timeout in the middle of the new-file write cannot be rolled back with certainty; the `.bak-` copy remains and the page says so (`rollback_failed` / `verify_failed`).
+- Chestsort: `.bak-` copies accumulate (the key has no `file.delete`); clean them in the panel's file manager. Only the 20 newest are listed.
+- Chestsort: the mod reports its own parse errors only in `shroudlink.log`; the page does not show them.
+- Chestsort: `GET` reads the whole file before the 1 MB check; a restore has no diff preview.
