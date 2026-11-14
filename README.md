@@ -7,7 +7,7 @@ Run it as its own container and set `ADDON_URL` (origin only, e.g. `http://addon
 
 ## Pelican prerequisites
 - A dedicated Pelican user with **no role** (a role with admin "update" on servers would give all rights on all servers).
-- Add it to the game server as a sub-user with only: `control.start`, `control.stop`, `control.restart`, `file.read`, `file.read-content`, `file.create`, `file.update`, `backup.create`, `backup.read`. The `control.*` and `backup.*` permissions are used by the power and backup actions; the `file.*` ones are for the later chestsort editor.
+- Add it to the game server as a sub-user with only: `control.start`, `control.stop`, `control.restart`, `file.read`, `file.read-content`, `file.create`, `backup.create`, `backup.read`. The `control.*` and `backup.*` permissions are used by the power and backup actions; `file.read`, `file.read-content` and `file.create` are used by the chestsort editor (read the file, list its folder, write the file and its `.bak-` copies; `file.create` is what the panel asks for `files/write`); nothing deletes a file, so clean old `.bak-` copies by hand in the panel's file manager.
 - Create an API key for that user with **allowed IPs = the address Pelican sees** (the denial message shows it). The secret is shown once.
 - `PELICAN_URL` may end with `/` (it is stripped; a double slash gives a 404).
 - Network: from the LAN the panel's public name may resolve to the public IP and time out (hairpin NAT). Fix it with a local DNS record to your reverse proxy, or `extra_hosts` in the compose file.
@@ -26,6 +26,9 @@ Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack i
 - Report vulnerabilities: `SECURITY.md`.
 
 MIT licence, see `LICENSE`.
+
+## Chestsort editor (optional)
+Set `CHESTSORT_FILE` to the mod's categories file from the server root (e.g. `/chestsort_categories.json`) to show the "Catégories de coffres" card: view for level `read`, edit and restore for `action`, with validation, a diff (one preview per second), a dated `.bak-` copy before each write (never overwriting an existing one: `-2`, `-3`... suffix), a read-back check and a rollback on any failure after the write was sent (also after a timeout); a failed rollback answers `rollback_failed` with the `.bak-` name to restore. A file that is not UTF-8 is refused (`file_not_utf8`), never rewritten. Off when unset. Rules: `docs/RULES.md`. The write is `POST files/write?file=<path>` with the raw body (204).
 
 ## Backups of the save only
 

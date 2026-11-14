@@ -4,13 +4,14 @@ const $ = (id) => document.getElementById(id);
 let state = "";
 let busy = false;
 let canAct = false;
+const ON_CONFIRM = {}; // dialog signal -> callback, filled by chestsort.js
 const LEVELS = [["", "Aucun"], ["read", "Lecture"], ["action", "Action"]];
 
 async function call(path, init) {
   const resp = await fetch(API + path, { credentials: "same-origin", ...init });
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
-    throw { status: resp.status, detail: body.detail, wait: body.retry_after };
+    throw { status: resp.status, detail: body.detail, wait: body.retry_after, errors: body.errors, backup: body.backup };
   }
   return resp.json();
 }
@@ -228,7 +229,8 @@ async function start() {
   $("c-ok").addEventListener("click", () => {
     const signal = $("confirm").dataset.signal;
     $("confirm").close();
-    if (signal === "backup") act("b-msg", () => post("/backups", { confirm_full: true }), "Sauvegarde lancée.");
+    if (ON_CONFIRM[signal]) ON_CONFIRM[signal]();
+    else if (signal === "backup") act("b-msg", () => post("/backups", { confirm_full: true }), "Sauvegarde lancée.");
     else power(signal);
   });
   try {
@@ -236,6 +238,7 @@ async function start() {
   } catch (code) {
     say(failure(code));
   }
+  if (me.chestsort) initChestsort(me);
   $("access").hidden = !me.is_admin;
   setInterval(tick, 15000);
   document.addEventListener("visibilitychange", tick);

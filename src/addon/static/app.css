@@ -19,3 +19,8 @@ button { font: inherit; color: inherit; background: var(--bg); border: 1px solid
 button:disabled { opacity: .5; cursor: not-allowed; }
 dialog { color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: .5rem; }
 dialog::backdrop { background: rgb(0 0 0 / .5); }
+textarea, input[type="text"], input[type="search"] { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: .25rem; padding: .25rem; box-sizing: border-box; }
+textarea { width: 100%; font-family: ui-monospace, monospace; }
+#cs-list { min-width: 16rem; }
+pre { overflow: auto; max-height: 24rem; white-space: pre; background: var(--bg); border: 1px solid var(--line); border-radius: .25rem; padding: .5rem; }
+pre:empty { display: none; }

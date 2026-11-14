@@ -8,6 +8,7 @@ import pytest
 from addon.config import Settings
 from addon.pelican import (
     Backup,
+    PelicanBadContent,
     PelicanClient,
     PelicanDenied,
     PelicanNotFound,
@@ -395,3 +396,121 @@ def test_create_backup_sends_the_ignore_list_when_configured() -> None:
 
     asyncio.run(run())
     assert json.loads(seen[0].content) == {"ignored": "/*\n!/savegame/\n!/savegame/**"}
+
+
+FILES = "/api/client/servers/abcd1234/files"
+TEXT = '{"mot": "épée\\n"}\nligne 2\n'
+
+
+def test_read_file_sends_exact_request_and_returns_text() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=TEXT.encode(), headers={"Content-Type": "text/plain"})
+
+    assert run_client(handler, "read_file", "/a b/é.json") == TEXT
+    req = seen[0]
+    assert (req.method, req.url.path) == ("GET", FILES + "/contents")
+    assert req.url.params["file"] == "/a b/é.json"
+    assert "%20" in str(req.url) or "+" in str(req.url)  # encoded by httpx, not by hand
+    assert req.headers["Authorization"] == "Bearer pacc_TEST"
+
+
+def test_read_file_keeps_bom_and_crlf() -> None:
+    raw = b"\xef\xbb\xbf{}\r\nx"
+    assert run_client(lambda r: httpx.Response(200, content=raw), "read_file", "/f") == (
+        "\ufeff{}\r\nx"
+    )
+
+
+@pytest.mark.parametrize("ctype", ["text/plain", "text/plain; charset=latin-1"])
+def test_read_file_refuses_non_utf8_bytes(ctype: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b'{"a": "\xe9"}', headers={"Content-Type": ctype})
+
+    with pytest.raises(PelicanBadContent):
+        run_client(handler, "read_file", "/f")
+
+
+def test_write_file_posts_raw_utf8_body_and_round_trips() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(204)
+
+    assert run_client(handler, "write_file", "/dir/x.json", TEXT) is None
+    req = seen[0]
+    assert (req.method, req.url.path) == ("POST", FILES + "/write")
+    assert req.url.params["file"] == "/dir/x.json"
+    assert req.content.decode("utf-8") == TEXT
+    assert req.headers["Content-Type"] == "text/plain; charset=utf-8"
+
+
+def test_list_files_returns_plain_file_names_only() -> None:
+    seen: list[httpx.Request] = []
+    body = {
+        "object": "list",
+        "data": [
+            {"object": "file_object", "attributes": {"name": "a.json", "is_file": True}},
+            {"object": "file_object", "attributes": {"name": "sub", "is_file": False}},
+            {"object": "file_object", "attributes": {"name": "b.bak", "is_file": True}},
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=body)
+
+    assert run_client(handler, "list_files", "/dir") == ["a.json", "b.bak"]
+    assert (seen[0].method, seen[0].url.path) == ("GET", FILES + "/list")
+    assert seen[0].url.params["directory"] == "/dir"
+
+
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [("read_file", ("/f",)), ("write_file", ("/f", "x")), ("list_files", ("/d",))],
+)
+@pytest.mark.parametrize(
+    ("status", "exc"),
+    [(403, PelicanDenied), (404, PelicanNotFound), (500, PelicanUnavailable)],
+)
+def test_file_methods_map_errors(
+    method: str,
+    args: tuple[str, ...],
+    status: int,
+    exc: type[Exception],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(exc) as info:
+        run_client(lambda r: httpx.Response(status), method, *args)
+    text = " ".join(r.getMessage() for r in caplog.records) + str(info.value)
+    assert "pacc_TEST" not in text
+
+
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [("read_file", ("/f",)), ("write_file", ("/f", "x")), ("list_files", ("/d",))],
+)
+def test_file_methods_timeout_is_unavailable(method: str, args: tuple[str, ...]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(PelicanUnavailable):
+        run_client(handler, method, *args)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {"data": "x"},
+        {"data": [1]},
+        {"data": [{"attributes": {"name": "a"}}]},
+        {"data": [{"attributes": {"name": 3, "is_file": True}}]},
+    ],
+)
+def test_list_files_bad_shapes_are_unavailable(body: Any) -> None:
+    with pytest.raises(PelicanUnavailable):
+        run_client(lambda r: httpx.Response(200, json=body), "list_files", "/d")

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Serveur de jeu</title>
 <link rel="stylesheet" href="app.css">
+<script src="chestsort.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -45,6 +46,44 @@
         <tbody id="b-body"></tbody>
       </table>
     </div>
+  </section>
+
+  <section id="chestsort" hidden aria-labelledby="h-chestsort">
+    <h2 id="h-chestsort">Catégories de coffres</h2>
+    <p id="cs-msg" role="status"></p>
+    <p id="cs-err" role="alert" class="err"></p>
+    <p><button type="button" id="cs-reload" hidden>Recharger le fichier</button></p>
+    <p>
+      <label for="cs-list">Catégories</label><br>
+      <select id="cs-list" size="8"></select>
+    </p>
+    <p id="cs-edit" hidden>
+      <label for="cs-name">Nom de la catégorie</label>
+      <input type="text" id="cs-name" maxlength="60">
+      <button type="button" id="cs-add">Ajouter</button>
+      <button type="button" id="cs-rename">Renommer</button>
+      <button type="button" id="cs-del">Supprimer</button>
+    </p>
+    <p>
+      <label for="cs-words">Mots (un par ligne)</label> <output id="cs-words-n"></output><br>
+      <textarea id="cs-words" rows="5" spellcheck="false"></textarea>
+    </p>
+    <p>
+      <label for="cs-items">Objets (un par ligne)</label> <output id="cs-items-n"></output><br>
+      <label for="cs-filter">Filtrer</label>
+      <input type="search" id="cs-filter"><br>
+      <textarea id="cs-items" rows="12" spellcheck="false"></textarea>
+    </p>
+    <p id="cs-act" hidden>
+      <button type="button" id="cs-preview">Aperçu des changements</button>
+      <button type="button" id="cs-save" disabled>Enregistrer</button>
+    </p>
+    <pre id="cs-diff" tabindex="0" aria-label="Aperçu des changements"></pre>
+    <p id="cs-bak-box" hidden>
+      <label for="cs-bak">Restaurer une copie</label>
+      <select id="cs-bak"></select>
+      <button type="button" id="cs-restore">Restaurer</button>
+    </p>
   </section>
 
   <dialog id="confirm" aria-labelledby="c-title">
