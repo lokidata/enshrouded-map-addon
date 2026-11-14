@@ -10,7 +10,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from addon import api
+from addon import api, chestsort
 from addon.api import create_app
 from addon.config import Settings
 from addon.throttle import Throttle
@@ -57,6 +57,11 @@ class Fake:
         self.backup_body: Any = {"attributes": BACKUP}
         self.backups_created = 0
         self.delay = 0.0
+        self.files: dict[str, str] = {}  # Pelican file store: path -> text
+        self.file_ops: list[tuple[str, str]] = []  # ("read"|"write"|"list", path)
+        # (op, path) -> one answer per call, in order: a status, or None to serve normally
+        self.fail: dict[tuple[str, str], list[int | None]] = {}
+        self.mangle: set[str] = set()  # next write to that path stores something else
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(self.delay)  # lets concurrent requests interleave
@@ -66,6 +71,8 @@ class Fake:
         if request.url.host == "panel.example.test":
             self.pelican_calls += 1
             path = request.url.path
+            if "/files/" in path:
+                return self.file_op(request)
             if path.endswith("/power"):
                 self.signals.append(json.loads(request.content)["signal"])
                 return httpx.Response(self.power_status)
@@ -88,6 +95,35 @@ class Fake:
             )
         user = self.sessions.get(cookie.removeprefix("session="))
         return httpx.Response(200, json=user or {"username": None, "is_admin": False})
+
+    def file_op(self, request: httpx.Request) -> httpx.Response:
+        op = request.url.path.rsplit("/", 1)[1]
+        op = {"contents": "read", "write": "write", "list": "list"}[op]
+        target = request.url.params.get("file") or request.url.params["directory"]
+        self.file_ops.append((op, target))
+        queue = self.fail.get((op, target)) or [None]
+        if (code := queue.pop(0)) is not None:
+            return httpx.Response(code)
+        if op == "write":
+            text = request.content.decode()
+            if target in self.mangle:
+                self.mangle.discard(target)
+                text += "corrupted"
+            self.files[target] = text
+            return httpx.Response(204)
+        if op == "list":
+            names = [
+                {"attributes": {"name": f.rsplit("/", 1)[1], "is_file": True}}
+                for f in self.files
+                if f.rsplit("/", 1)[0] + "/" == target
+            ]
+            return httpx.Response(200, json={"data": names})
+        if target not in self.files:
+            return httpx.Response(404)
+        return httpx.Response(200, text=self.files[target])
+
+    def writes(self) -> list[str]:
+        return [p for op, p in self.file_ops if op == "write"]
 
 
 @pytest.fixture
@@ -138,6 +174,7 @@ def test_unknown_user_has_no_level_and_no_status(client: TestClient, fake: Fake)
         "is_admin": False,
         "level": None,
         "backup_filtered": True,
+        "chestsort": False,
     }
     assert client.get("/addon/api/status", headers=as_("alice")).status_code == 403
     assert client.get("/addon/api/journal", headers=as_("alice")).status_code == 403
@@ -173,7 +210,13 @@ def test_read_user_journal_has_only_public_fields(client: TestClient) -> None:
 
 def test_admin_has_action_and_everything(client: TestClient) -> None:
     me = client.get("/addon/api/me", headers=as_("admin")).json()
-    assert me == {"username": "root", "is_admin": True, "level": "action", "backup_filtered": True}
+    assert me == {
+        "username": "root",
+        "is_admin": True,
+        "level": "action",
+        "backup_filtered": True,
+        "chestsort": False,
+    }
     for path in ("/status", "/journal", "/access"):
         assert client.get(f"/addon/api{path}", headers=as_("admin")).status_code == 200
 
@@ -325,7 +368,7 @@ def post(client: TestClient, path: str, who: str = "admin", **kw: Any) -> httpx.
 
 def actions(client: TestClient) -> list[tuple[Any, ...]]:
     rows = client.get("/addon/api/journal", headers=as_("admin")).json()
-    keep = ("power", "backup")
+    keep = ("power", "backup", "chestsort")
     return [
         (r["username"], r["action"], r["target"], r["result"], r["pelican_status"])
         for r in reversed(rows)
@@ -686,3 +729,400 @@ def test_filtered_backup_needs_no_confirmation(client: TestClient, fake: Fake) -
 def test_me_tells_whether_backups_are_filtered(client: TestClient, client_full: TestClient) -> None:
     assert client.get("/addon/api/me", headers=as_("admin")).json()["backup_filtered"] is True
     assert client_full.get("/addon/api/me", headers=as_("admin")).json()["backup_filtered"] is False
+
+
+# --- chestsort categories editor ---------------------------------------------------------------
+
+CS = "/chestsort_categories.json"
+SECRET_WORD = "zzmarqueurzz"  # content marker: must never reach the journal or the logs
+CS_OBJ: dict[str, Any] = {
+    "_readme": ["Ne pas utiliser « Nourriture »."],
+    "categories": {
+        "Minerais": {"words": ["minerai", SECRET_WORD], "items": ["Ore_Copper"]},
+        "Bois": {"words": ["bois"], "items": ["Wood_Log", "Wood_*"]},
+    },
+}
+CS_TEXT = chestsort.dump(CS_OBJ)
+NEW_CATS = {**CS_OBJ["categories"], "Bois": {"words": ["bûche"], "items": ["Wood_Log"]}}
+
+
+@pytest.fixture
+def cs(fake: Fake, tmp_path: Path) -> Iterator[TestClient]:
+    settings = Settings(
+        pelican_url="https://panel.example.test",
+        pelican_api_key=KEY,  # type: ignore[arg-type]
+        pelican_server_id="abcd1234",
+        site_url="http://site.example.test",
+        db_path=str(tmp_path / "addon.db"),
+        allowed_origin="https://site.example.test",
+        backup_ignored="/x",
+        chestsort_file=CS,
+    )
+    fake.files[CS] = CS_TEXT
+    with TestClient(create_app(settings, httpx.MockTransport(fake.handle))) as c:
+        yield c
+
+
+def save(client: TestClient, who: str = "admin", **over: Any) -> httpx.Response:
+    body = {"categories": NEW_CATS, "base_hash": chestsort.sha256(CS_TEXT), "confirm": True}
+    resp: httpx.Response = client.put(
+        "/addon/api/chestsort", headers=as_(who, WRITE), json={**body, **over}
+    )
+    return resp
+
+
+def restore(client: TestClient, name: str, who: str = "admin", **over: Any) -> httpx.Response:
+    body = {"name": name, "base_hash": chestsort.sha256(CS_TEXT), "confirm": True, **over}
+    return post(client, "/chestsort/restore", who, json=body)
+
+
+def bak(fake: Fake) -> str:
+    return next(p for p in fake.files if p.startswith(CS + ".bak-"))
+
+
+def test_chestsort_off_by_default_is_404(client: TestClient, fake: Fake) -> None:
+    assert client.get("/addon/api/me", headers=as_("admin")).json()["chestsort"] is False
+    assert client.get("/addon/api/chestsort", headers=as_("admin")).status_code == 404
+    assert client.get("/addon/api/chestsort/backups", headers=as_("admin")).status_code == 404
+    assert post(client, "/chestsort/preview", json={"categories": {}}).status_code == 404
+    assert post(client, "/chestsort/restore", json={}).status_code == 404
+    assert client.put("/addon/api/chestsort", headers=as_("admin", WRITE)).status_code == 404
+    assert fake.file_ops == [] and actions(client) == []
+
+
+def test_me_tells_chestsort_is_on(cs: TestClient) -> None:
+    assert cs.get("/addon/api/me", headers=as_("admin")).json()["chestsort"] is True
+
+
+def test_reader_sees_the_file(cs: TestClient, fake: Fake) -> None:
+    grant(cs, ALICE_KEY, "read")
+    resp = cs.get("/addon/api/chestsort", headers=as_("alice"))
+    assert resp.json() == {
+        "categories": CS_OBJ["categories"],
+        "other_keys_kept": False,
+        "hash": chestsort.sha256(CS_TEXT),
+        "bytes": len(CS_TEXT.encode()),
+    }
+    fake.files[CS] = chestsort.dump({**CS_OBJ, "version": 2})
+    assert cs.get("/addon/api/chestsort", headers=as_("alice")).json()["other_keys_kept"] is True
+
+
+def test_file_over_1_mb_is_413(cs: TestClient, fake: Fake) -> None:
+    fake.files[CS] = chestsort.dump({"categories": {"A": {"words": ["x" * 1_000_000]}}})
+    resp = cs.get("/addon/api/chestsort", headers=as_("admin"))
+    assert (resp.status_code, resp.json()) == (413, {"detail": "too_large"})
+
+
+def test_unreadable_file_is_502(cs: TestClient, fake: Fake) -> None:
+    fake.files[CS] = "{not json"
+    resp = cs.get("/addon/api/chestsort", headers=as_("admin"))
+    assert (resp.status_code, resp.json()) == (502, {"detail": "file_invalid"})
+    del fake.files[CS]
+    resp = cs.get("/addon/api/chestsort", headers=as_("admin"))
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_not_found"})
+
+
+def test_read_and_unlisted_users_cannot_write_chestsort(cs: TestClient, fake: Fake) -> None:
+    grant(cs, ALICE_KEY, "read")
+    for who in ("alice", "bob"):
+        assert save(cs, who).status_code == 403
+        assert post(cs, "/chestsort/preview", who, json={"categories": NEW_CATS}).status_code == 403
+        assert restore(cs, "x", who).status_code == 403
+    assert cs.get("/addon/api/chestsort", headers=as_("bob")).status_code == 403
+    assert cs.get("/addon/api/chestsort/backups", headers=as_("bob")).status_code == 403
+    assert fake.file_ops == [] and actions(cs) == []
+
+
+def test_preview_shows_diff_and_writes_nothing(cs: TestClient, fake: Fake) -> None:
+    grant(cs, ALICE_KEY, "action")
+    resp = post(cs, "/chestsort/preview", "alice", json={"categories": NEW_CATS})
+    body = resp.json()
+    assert (body["errors"], body["changed"]) == ([], True)
+    assert '+        "bûche"' in body["diff"] and '-        "bois"' in body["diff"]
+    same = post(cs, "/chestsort/preview", json={"categories": CS_OBJ["categories"]}).json()
+    assert (same["changed"], same["diff"]) == (False, [])
+    assert fake.writes() == [] and actions(cs) == []  # a preview is not journalled
+
+
+def test_preview_reports_errors_and_warnings(cs: TestClient) -> None:
+    cats = {"Nourriture": {"words": ["bois"], "items": []}, "Bois": {"words": "bois", "items": []}}
+    body = post(cs, "/chestsort/preview", json={"categories": cats}).json()
+    assert any("« words » doit être une liste" in e for e in body["errors"])
+    assert any("groupe intégré" in w for w in body["warnings"])
+
+
+def test_save_writes_backup_then_file(cs: TestClient, fake: Fake) -> None:
+    resp = save(cs)
+    new_text = chestsort.dump({**CS_OBJ, "categories": NEW_CATS})
+    assert resp.status_code == 200
+    name = resp.json()["backup"]
+    assert chestsort.is_bak_name("chestsort_categories.json", name)
+    assert resp.json()["hash"] == chestsort.sha256(new_text)
+    assert fake.writes() == ["/" + name, CS]
+    assert fake.file_ops == [
+        ("read", CS),
+        ("write", "/" + name),
+        ("read", "/" + name),
+        ("write", CS),
+        ("read", CS),
+    ]
+    assert fake.files == {CS: new_text, "/" + name: CS_TEXT}  # _readme kept
+    assert actions(cs) == [("root", "chestsort", "save", "ok", None)]
+
+
+@pytest.mark.parametrize("extra", [{"confirm": False}, {"confirm": "true"}, {"confirm": 1}])
+def test_save_needs_confirm_true(cs: TestClient, fake: Fake, extra: dict[str, Any]) -> None:
+    resp = save(cs, **extra)
+    assert (resp.status_code, resp.json()) == (422, {"detail": "confirmation_required"})
+    resp = cs.put(
+        "/addon/api/chestsort",
+        headers=as_("admin", WRITE),
+        json={"categories": NEW_CATS, "base_hash": "x"},
+    )
+    assert resp.status_code == 422
+    assert fake.file_ops == []
+    assert [a[3] for a in actions(cs)] == ["confirmation_required"] * 2
+
+
+@pytest.mark.parametrize("body", ["not json", "[]", '{"categories": {}}'])
+def test_malformed_save_is_422_journalled(cs: TestClient, fake: Fake, body: str) -> None:
+    resp = cs.put("/addon/api/chestsort", headers=as_("admin", WRITE), content=body)
+    assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_request"})
+    assert fake.file_ops == []
+    assert actions(cs) == [("root", "chestsort", "save", "invalid_request", None)]
+
+
+def test_file_changed_elsewhere_writes_nothing(cs: TestClient, fake: Fake) -> None:
+    fake.files[CS] = CS_TEXT + " "  # edited in the panel since the view
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (409, {"detail": "changed_elsewhere"})
+    assert fake.writes() == []
+    assert actions(cs) == [("root", "chestsort", "save", "changed_elsewhere", None)]
+
+
+@pytest.mark.parametrize(
+    ("cats", "message"),
+    [
+        (["Bois"], "« categories » doit être un objet"),
+        ({"Bois": {"words": [], "items": [], "color": "red"}}, "clé inconnue « color »"),
+        ({"Bois": {"words": "bois", "items": []}}, "« words » doit être une liste"),
+        ({"Bois": {"words": [], "items": ["x" * 200_000]}}, "« items » ne doit contenir"),
+        ({}, "de 1 à 200 catégories"),
+    ],
+)
+def test_invalid_categories_refused_with_messages(
+    cs: TestClient, fake: Fake, cats: Any, message: str
+) -> None:
+    resp = save(cs, categories=cats)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "invalid_content"
+    assert any(message in e for e in resp.json()["errors"])
+    assert fake.writes() == []
+    assert actions(cs) == [("root", "chestsort", "save", "invalid_content", None)]
+
+
+def test_body_over_1_mb_is_413_before_anything(cs: TestClient, fake: Fake) -> None:
+    big: dict[str, Any] = {"categories": {"A": {"words": ["x" * 1_100_000], "items": []}}}
+    resp = save(cs, **big)
+    assert (resp.status_code, resp.json()) == (413, {"detail": "too_large"})
+    resp = post(cs, "/chestsort/preview", json=big)
+    assert (resp.status_code, resp.json()) == (413, {"detail": "too_large"})
+    assert fake.file_ops == []
+    assert actions(cs) == [("root", "chestsort", "save", "too_large", None)]
+
+
+def test_backup_write_failing_never_writes_the_file(cs: TestClient, fake: Fake) -> None:
+    orig = fake.file_op
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        if ".bak-" in request.url.params.get("file", "") and request.method == "POST":
+            fake.file_ops.append(("write", request.url.params["file"]))
+            return httpx.Response(500)
+        return orig(request)
+
+    fake.file_op = failing  # type: ignore[method-assign]
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    assert CS not in fake.writes() and fake.files[CS] == CS_TEXT
+    assert actions(cs) == [("root", "chestsort", "save", "pelican_unavailable", None)]
+
+
+def test_backup_read_back_differing_never_writes_the_file(cs: TestClient, fake: Fake) -> None:
+    orig = fake.file_op
+
+    def mangle_bak(request: httpx.Request) -> httpx.Response:
+        if ".bak-" in request.url.params.get("file", ""):
+            fake.mangle.add(request.url.params["file"])
+        return orig(request)
+
+    fake.file_op = mangle_bak  # type: ignore[method-assign]
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (502, {"detail": "backup_failed"})
+    assert CS not in fake.writes() and fake.files[CS] == CS_TEXT
+    assert actions(cs) == [("root", "chestsort", "save", "backup_failed", None)]
+
+
+def test_read_back_mismatch_rolls_back(cs: TestClient, fake: Fake) -> None:
+    fake.mangle.add(CS)
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (502, {"detail": "verify_failed"})
+    assert fake.writes() == ["/" + bak(fake)[1:], CS, CS]
+    assert fake.files[CS] == CS_TEXT
+    assert actions(cs) == [("root", "chestsort", "save", "rolled_back", None)]
+    assert save(cs).status_code == 429  # the file was written: the window started
+
+
+def test_read_back_failing_rolls_back(cs: TestClient, fake: Fake) -> None:
+    fake.fail[("read", CS)] = [None, 500]
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (502, {"detail": "verify_failed"})
+    assert fake.writes()[1:] == [CS, CS] and fake.files[CS] == CS_TEXT
+    assert [a[3] for a in actions(cs)] == ["rolled_back"]
+
+
+def test_rollback_failing_is_journalled(cs: TestClient, fake: Fake) -> None:
+    fake.mangle.add(CS)
+    fake.fail[("write", CS)] = [None, 500]
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (502, {"detail": "verify_failed"})
+    assert [a[3] for a in actions(cs)] == ["rollback_failed"]
+
+
+@pytest.mark.parametrize(
+    ("code", "detail", "journal", "window"),
+    [
+        (500, "verify_failed", "rolled_back", True),  # may be half written: roll back
+        (403, "pelican_denied", "pelican_denied", False),  # refused: nothing written
+    ],
+)
+def test_file_write_failing(
+    cs: TestClient, fake: Fake, code: int, detail: str, journal: str, window: bool
+) -> None:
+    fake.fail[("write", CS)] = [code]
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (502, {"detail": detail})
+    assert fake.files[CS] == CS_TEXT
+    assert [a[3] for a in actions(cs)] == [journal]
+    assert save(cs).status_code == (429 if window else 200)
+
+
+def test_chestsort_writes_are_rate_limited_for_10_s(cs: TestClient, fake: Fake) -> None:
+    now = [100.0]
+    cs.app.state.throttle = Throttle(lambda: now[0])  # type: ignore[attr-defined]
+    assert save(cs, base_hash="stale").status_code == 409  # a refusal starts no window
+    assert save(cs).status_code == 200
+    new_hash = chestsort.sha256(fake.files[CS])
+    now[0] += 9.5
+    resp = save(cs, base_hash=new_hash, categories=CS_OBJ["categories"])
+    assert (resp.status_code, resp.headers["Retry-After"]) == (429, "1")
+    assert restore(cs, bak(fake)[1:], base_hash=new_hash).status_code == 429  # shared key
+    now[0] += 0.5
+    assert save(cs, base_hash=new_hash, categories=CS_OBJ["categories"]).status_code == 200
+    assert [a[3] for a in actions(cs)] == [
+        "changed_elsewhere",
+        "ok",
+        "rate_limited",
+        "rate_limited",
+        "ok",
+    ]
+
+
+def test_slow_panel_on_save_is_504_and_starts_the_window(
+    cs: TestClient, fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "ACTION_TIMEOUT", 0.05)
+    fake.delay = 0.2
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (504, {"detail": "pelican_timeout"})
+    fake.delay = 0
+    assert save(cs).status_code == 429
+    assert [a[3] for a in actions(cs)] == ["timeout", "rate_limited"]
+
+
+def test_two_concurrent_saves_make_one_write_sequence(cs: TestClient, fake: Fake) -> None:
+    fake.delay = 0.05
+    with ThreadPoolExecutor(2) as pool:
+        codes = sorted(pool.map(lambda _: save(cs).status_code, range(2)))
+    assert codes == [200, 429]
+    assert len(fake.writes()) == 2 and fake.writes()[1] == CS
+
+
+def test_backups_lists_the_20_newest_bak_files_only(cs: TestClient, fake: Fake) -> None:
+    grant(cs, ALICE_KEY, "read")
+    for day in range(1, 26):
+        fake.files[f"{CS}.bak-202601{day:02d}-000000"] = "{}"
+    fake.files["/other.json.bak-20260101-000000"] = "{}"
+    fake.files[CS + ".bak-20260101-000000.json"] = "{}"
+    names = cs.get("/addon/api/chestsort/backups", headers=as_("alice")).json()
+    assert len(names) == 20
+    assert names[0] == "chestsort_categories.json.bak-20260125-000000"
+    assert names[-1] == "chestsort_categories.json.bak-20260106-000000"
+    assert fake.file_ops == [("list", "/")]
+
+
+def test_restore_from_a_listed_backup(cs: TestClient, fake: Fake) -> None:
+    old = chestsort.dump({**CS_OBJ, "categories": NEW_CATS})
+    fake.files[CS + ".bak-20260101-000000"] = old
+    resp = restore(cs, "chestsort_categories.json.bak-20260101-000000")
+    assert resp.status_code == 200
+    fresh = "/" + resp.json()["backup"]
+    assert fake.writes() == [fresh, CS]
+    assert (fake.files[CS], fake.files[fresh]) == (old, CS_TEXT)
+    assert actions(cs) == [("root", "chestsort", "restore", "ok", None)]
+
+
+@pytest.mark.parametrize(
+    ("name", "detail"),
+    [
+        ("../etc/passwd", "invalid_backup_name"),
+        ("/chestsort_categories.json.bak-20260101-000000", "invalid_backup_name"),
+        ("chestsort_categories.json.bak-20260101-000000/../x", "invalid_backup_name"),
+        ("other.json.bak-20260101-000000", "invalid_backup_name"),
+        ("chestsort_categories.json.bak-20260101-000000.json", "invalid_backup_name"),
+        ("chestsort_categories.json", "invalid_backup_name"),
+        ("chestsort_categories.json.bak-20260202-000000", "unknown_backup"),  # not listed
+    ],
+)
+def test_restore_only_from_listed_bak_names(
+    cs: TestClient, fake: Fake, name: str, detail: str
+) -> None:
+    fake.files[CS + ".bak-20260101-000000"] = CS_TEXT
+    fake.files["/other.json.bak-20260101-000000"] = CS_TEXT
+    resp = restore(cs, name)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        (404 if detail == "unknown_backup" else 422),
+        detail,
+    )
+    assert fake.writes() == [] and all(op != "read" for op, _ in fake.file_ops)
+    assert [a[3] for a in actions(cs)] == [detail]
+
+
+def test_restore_of_an_invalid_backup_is_refused(cs: TestClient, fake: Fake) -> None:
+    fake.files[CS + ".bak-20260101-000000"] = '{"categories": []}'
+    resp = restore(cs, "chestsort_categories.json.bak-20260101-000000")
+    assert (resp.status_code, resp.json()["detail"]) == (422, "invalid_content")
+    assert fake.writes() == []
+
+
+def test_restore_needs_confirm_true(cs: TestClient, fake: Fake) -> None:
+    fake.files[CS + ".bak-20260101-000000"] = CS_TEXT
+    resp = restore(cs, "chestsort_categories.json.bak-20260101-000000", confirm="true")
+    assert (resp.status_code, resp.json()) == (422, {"detail": "confirmation_required"})
+    assert fake.file_ops == []
+
+
+def test_contents_never_in_journal_or_logs(
+    cs: TestClient, fake: Fake, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    cats = {**NEW_CATS, "Neuf": {"words": [SECRET_WORD + "2"], "items": ["Rare_" + SECRET_WORD]}}
+    assert save(cs, categories=cats).status_code == 200
+    fake.mangle.add(CS)
+    cs.app.state.throttle = Throttle()  # type: ignore[attr-defined]
+    save(cs, base_hash=chestsort.sha256(fake.files[CS]))
+    save(cs, categories={"Bois": {"words": SECRET_WORD, "items": []}})
+    journal = cs.get("/addon/api/journal", headers=as_("admin")).text
+    assert SECRET_WORD not in journal
+    logs = " ".join(r.getMessage() + str(r.args) for r in caplog.records)
+    assert SECRET_WORD not in logs and KEY not in logs
+    assert "categories=3 items=" in logs

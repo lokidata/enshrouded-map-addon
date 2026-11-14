@@ -72,3 +72,31 @@ def test_backup_ignored_escaped_newlines_become_newlines() -> None:
     assert make(backup_ignored=r"/*\n!/savegame/\n!/savegame/**").backup_ignored == (
         "/*\n!/savegame/\n!/savegame/**"
     )
+
+
+def test_chestsort_off_by_default() -> None:
+    assert make().chestsort_file is None
+
+
+@pytest.mark.parametrize("good", ["/chestsort_categories.json", "/mods/shroudlink/cats.json"])
+def test_chestsort_file_ok(good: str) -> None:
+    assert make(chestsort_file=good).chestsort_file == good
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "chestsort.json",
+        "/../etc/passwd",
+        "/a/../b.json",
+        "/a\\b.json",
+        "/a\nb.json",
+        "/a\x7fb.json",
+        "/",
+        "/dir/",
+        "/" + "a" * 200,
+    ],
+)
+def test_chestsort_file_refused(bad: str) -> None:
+    with pytest.raises(ValidationError, match="CHESTSORT_FILE"):
+        make(chestsort_file=bad)
