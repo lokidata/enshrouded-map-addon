@@ -1,0 +1,17 @@
+:root { color-scheme: light dark; --bg: #fff; --fg: #1b1b1f; --mut: #55555e; --line: #c9c9d1; --card: #f4f4f7; --err: #a10000; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15151a; --fg: #ececf1; --mut: #b0b0bb; --line: #44444e; --card: #20202a; --err: #ff9a9a; }
+}
+body { margin: 0; background: var(--bg); color: var(--fg); font: 1rem/1.5 system-ui, sans-serif; }
+main { max-width: 60rem; margin: 0 auto; padding: 1rem; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; margin-block: 1rem; }
+h1, h2 { margin: 0 0 .5rem; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
+dt { color: var(--mut); }
+dd { margin: 0; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid var(--line); }
+select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: .25rem; padding: .25rem; }
+:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+.err { color: var(--err); }

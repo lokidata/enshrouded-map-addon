@@ -1,0 +1,37 @@
+name: enshrouded-addon
+
+services:
+  addon:
+    build: ..
+    image: enshrouded-server-addon:local
+    environment:
+      PELICAN_URL: https://panel.example.test # no trailing slash needed (stripped), https only
+      PELICAN_SERVER_ID: abcd1234
+      # The key comes from the stack variables (Portainer), never from a file in the repo.
+      PELICAN_API_KEY: ${PELICAN_API_KEY:?set it in the stack variables}
+      SITE_URL: http://web:8080 # internal URL of the site (its API answers under /api/v1)
+      ALLOWED_ORIGIN: https://map.example.test # recommended: pins the Origin of every write
+      DB_PATH: /data/addon.db
+    # Hairpin NAT: if the panel's public name resolves to the public IP from the LAN,
+    # point it at the reverse proxy host (or fix it with a local DNS record instead).
+    # extra_hosts:
+    #   - "panel.example.test:192.0.2.10"
+    volumes:
+      - addon-data:/data
+    networks: [site-backend] # the network the site's web container is on
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    restart: unless-stopped
+
+volumes:
+  addon-data:
+
+networks:
+  site-backend:
+    external: true
+    name: enshrouded-map_backend
