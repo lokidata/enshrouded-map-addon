@@ -1,0 +1,26 @@
+# Paste this service into the site's Portainer stack (same stack = same networks, no ordering problem),
+# then follow deploy/portainer/README.md for the two variables to add to `api` and `web`.
+# Replace `mybridge` by the outbound-capable network your stack already uses for `web`.
+  addon:
+    image: ghcr.io/lokidata/enshrouded-map-addon:${IMAGE_TAG:-latest}
+    pull_policy: always
+    environment:
+      PELICAN_URL: ${PELICAN_URL:?the panel origin, https only}
+      PELICAN_SERVER_ID: ${PELICAN_SERVER_ID:?short identifier of the game server in the panel}
+      PELICAN_API_KEY: ${PELICAN_API_KEY:?client API key of the dedicated panel user}
+      SITE_URL: http://api:8000 # the site's API on the backend network
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:?origin players open, e.g. https://carte.example.lan}
+      DB_PATH: /data/addon.db
+    volumes:
+      - /opt/enshrouded/addon:/data # must be writable by uid 10001
+    networks:
+      backend: {} # the web container reaches the add-on here
+      edge: {} # outbound access to the panel (backend is internal)
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    restart: unless-stopped
