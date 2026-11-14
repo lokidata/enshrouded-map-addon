@@ -3,11 +3,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.responses import Response
+from starlette.types import Scope
 
 from addon.config import Settings, get_settings
 from addon.identity import Identity, SiteUnavailable, Unauthenticated, who_am_i
@@ -147,6 +151,17 @@ async def set_access(
     return {"user_key": user_key, "username": username, "level": body.level}
 
 
+CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+
+
+class Page(StaticFiles):
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        resp = await super().get_response(path, scope)
+        resp.headers["Content-Security-Policy"] = CSP
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+
 def create_app(
     settings: Settings | None = None, transport: httpx.AsyncBaseTransport | None = None
 ) -> FastAPI:
@@ -162,4 +177,5 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(router)
+    app.mount("/addon", Page(directory=Path(__file__).parent / "static", html=True))
     return app
