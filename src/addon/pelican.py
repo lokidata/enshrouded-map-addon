@@ -106,14 +106,14 @@ class PelicanClient:
             self._fail("unreachable", None, type(exc).__name__)
             raise PelicanUnavailable("pelican unreachable") from exc
         code = resp.status_code
-        if code in (200, 204):
+        if 200 <= code < 300:  # Pelican may answer 200, 201 or 204; bodies are checked by callers
             return resp
         kinds = {403: "denied", 404: "not_found", 400: "rejected", 409: "rejected", 422: "rejected"}
         if code not in kinds:
             self._fail("unavailable", code, "")
             raise PelicanUnavailable(f"pelican answered {code}")
         self._fail(kinds[code], code, _panel_detail(resp))
-        raise {403: PelicanDenied, 404: PelicanNotFound}.get(code, PelicanRejected)
+        raise {403: PelicanDenied, 404: PelicanNotFound}.get(code, PelicanRejected)(code)
 
     async def _json(self, method: str, suffix: str, body: dict[str, Any] | None = None) -> Any:
         resp = await self._request(method, suffix, body)

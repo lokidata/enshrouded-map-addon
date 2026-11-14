@@ -241,7 +241,7 @@ def run_client(handler: Any, method: str, *args: Any) -> Any:
     return asyncio.run(run())
 
 
-@pytest.mark.parametrize("code", [200, 204])
+@pytest.mark.parametrize("code", [200, 201, 202, 204])
 def test_power_sends_exact_request(code: int) -> None:
     seen: list[httpx.Request] = []
 
@@ -290,6 +290,7 @@ def test_rejection_reason_goes_to_the_log_only(caplog: pytest.LogCaptureFixture)
         run_client(handler, "create_backup")
     assert "rejected" in caplog.text and "Backup limit reached" in caplog.text
     assert "Backup limit" not in str(info.value) and "pacc_TEST" not in caplog.text
+    assert info.value.args == (400,)  # the route journals Pelican's status
 
 
 def test_power_timeout_is_unavailable_and_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -346,3 +347,16 @@ def test_list_backups_bad_shapes_are_unavailable(body: Any) -> None:
 def test_create_backup_bad_shape_is_unavailable() -> None:
     with pytest.raises(PelicanUnavailable):
         run_client(lambda request: httpx.Response(200, json={"attributes": {}}), "create_backup")
+
+
+def test_create_backup_201_parses() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"attributes": PENDING})
+
+    assert run_client(handler, "create_backup").uuid == "u2"
+
+
+@pytest.mark.parametrize(("code", "body"), [(201, {}), (202, None), (204, None)])
+def test_create_backup_2xx_without_body_is_unavailable(code: int, body: Any) -> None:
+    with pytest.raises(PelicanUnavailable):
+        run_client(lambda request: httpx.Response(code, json=body), "create_backup")
