@@ -29,6 +29,7 @@ function say(text) {
 
 const REASONS = {
   confirmation_required: "Confirmez d'abord que les joueurs sont prévenus.",
+  full_backup_confirmation_required: "Confirmez d'abord la sauvegarde complète du serveur.",
   invalid_request: "Requête invalide.",
   wrong_state: "Action impossible dans l'état actuel du serveur.",
   pelican_rejected: "Le panneau a refusé l'action.",
@@ -155,10 +156,22 @@ const power = (signal) =>
 function ask(signal) {
   const dlg = $("confirm");
   $("c-title").textContent = signal === "stop" ? "Arrêter le serveur ?" : "Redémarrer le serveur ?";
+  $("c-label").textContent = "J'ai prévenu les joueurs";
   $("c-warned").checked = false;
   $("c-ok").disabled = true;
   dlg.dataset.signal = signal;
   dlg.showModal();
+  $("c-warned").focus();
+}
+
+function askFull() {
+  // no BACKUP_IGNORED: the backup contains every file of the server and can be very large
+  $("c-title").textContent = "Sauvegarder tout le serveur ?";
+  $("c-label").textContent = "Je sais que cela sauvegarde tous les fichiers du serveur (très volumineux)";
+  $("c-warned").checked = false;
+  $("c-ok").disabled = true;
+  $("confirm").dataset.signal = "backup";
+  $("confirm").showModal();
   $("c-warned").focus();
 }
 
@@ -206,13 +219,17 @@ async function start() {
   for (const b of document.querySelectorAll("[data-signal]")) {
     b.addEventListener("click", () => (b.dataset.signal === "start" ? power("start") : ask(b.dataset.signal)));
   }
-  $("b-create").addEventListener("click", () => act("b-msg", () => post("/backups", {}), "Sauvegarde lancée."));
+  $("b-create").addEventListener("click", () => {
+    if (me.backup_filtered) act("b-msg", () => post("/backups", {}), "Sauvegarde lancée.");
+    else askFull();
+  });
   $("c-warned").addEventListener("change", () => ($("c-ok").disabled = !$("c-warned").checked));
   $("c-cancel").addEventListener("click", () => $("confirm").close());
   $("c-ok").addEventListener("click", () => {
     const signal = $("confirm").dataset.signal;
     $("confirm").close();
-    power(signal);
+    if (signal === "backup") act("b-msg", () => post("/backups", { confirm_full: true }), "Sauvegarde lancée.");
+    else power(signal);
   });
   try {
     await Promise.all([refreshStatus(), loadJournal(), loadBackups(), me.is_admin ? loadAccess() : null]);
