@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7} # new releases wait a week: gives time for compromised ones to be pulled
+    groups:
+      actions: {patterns: ["*"]}
+  - package-ecosystem: uv
+    directory: /
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}
+    groups:
+      python: {patterns: ["*"], update-types: [minor, patch]}
+  # Add the docker ecosystem here when the Dockerfile lands.

@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated or third-party files, ignored by git anyway"
+paths = ['''\.venv/''']
+root = true
