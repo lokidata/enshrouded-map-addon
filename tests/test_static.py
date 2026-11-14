@@ -38,3 +38,13 @@ def test_no_external_url_and_no_innerhtml(client: TestClient) -> None:
         assert not re.search(r"(https?:)?//[a-z0-9.-]+\.[a-z]{2,}", text, re.I), path
         assert "innerHTML" not in text
     assert client.get("/addon/api/me").status_code == 401  # API untouched
+
+
+def test_page_has_actions_and_backups_ui(client: TestClient) -> None:
+    js = client.get("/addon/app.js").text
+    for needle in ("/power", "/backups", "X-Addon", "confirm: true"):
+        assert needle in js
+    html = client.get("/addon/").text
+    assert "<dialog" in html and "J'ai prévenu les joueurs" in html
+    for ident in ("actions", "backups", "b-create"):
+        assert f'id="{ident}"' in html

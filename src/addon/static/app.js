@@ -1,20 +1,47 @@
 "use strict";
 const API = "/addon/api";
 const $ = (id) => document.getElementById(id);
+let state = "";
+let busy = false;
+let canAct = false;
 const LEVELS = [["", "Aucun"], ["read", "Lecture"], ["action", "Action"]];
 
 async function call(path, init) {
   const resp = await fetch(API + path, { credentials: "same-origin", ...init });
-  if (!resp.ok) throw resp.status;
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw { status: resp.status, detail: body.detail, wait: body.retry_after };
+  }
   return resp.json();
 }
+
+const post = (path, body) =>
+  call(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Addon": "1" },
+    body: JSON.stringify(body),
+  });
 
 function say(text) {
   $("msg").textContent = text;
   $("msg").className = text ? "err" : "";
 }
 
-function failure(code) {
+const REASONS = {
+  confirmation_required: "Confirmez d'abord que les joueurs sont prévenus.",
+  invalid_request: "Requête invalide.",
+  wrong_state: "Action impossible dans l'état actuel du serveur.",
+  pelican_rejected: "Le panneau a refusé l'action.",
+  pelican_denied: "Le panneau refuse l'accès à ce serveur.",
+  pelican_not_found: "Serveur introuvable sur le panneau.",
+  pelican_unavailable: "Le panneau du serveur est injoignable.",
+  forbidden: "Action non autorisée.",
+};
+
+function failure(err) {
+  const code = err.status;
+  if (code === 429) return "Trop rapproché : réessayez dans " + (err.wait ?? "quelques") + " s.";
+  if (REASONS[err.detail]) return REASONS[err.detail];
   if (code === 401) return "Connectez-vous d'abord sur le site.";
   if (code === 503) return "Le site est injoignable.";
   if (code === 502) return "Le panneau du serveur est injoignable.";
@@ -35,6 +62,8 @@ async function refreshStatus() {
     $("s-ram").textContent = fmtBytes(s.memory_bytes);
     $("s-disk").textContent = fmtBytes(s.disk_bytes);
     $("s-up").textContent = fmtUptime(s.uptime_ms);
+    state = s.state;
+    syncButtons();
     $("s-err").textContent = "";
   } catch (code) {
     $("s-err").textContent = failure(code);
@@ -89,6 +118,63 @@ async function loadAccess() {
   }
 }
 
+const NEEDS = { start: "offline", stop: "running", restart: "running" };
+const DONE = { start: "Démarrage demandé.", stop: "Arrêt demandé.", restart: "Redémarrage demandé." };
+
+function syncButtons() {
+  for (const b of document.querySelectorAll("[data-signal]")) {
+    b.disabled = busy || state !== NEEDS[b.dataset.signal];
+  }
+  $("b-create").disabled = busy;
+}
+
+// Runs one write with every button locked; the server's reason is shown in French.
+async function act(target, run, okText) {
+  busy = true;
+  $(target).textContent = "";
+  syncButtons();
+  try {
+    await run();
+    $(target).textContent = okText;
+  } catch (err) {
+    $(target).textContent = failure(err);
+  }
+  busy = false;
+  await Promise.all([refreshStatus(), loadBackups()]);
+  syncButtons();
+}
+
+const power = (signal) =>
+  act("act-msg", () => post("/power", signal === "start" ? { signal } : { signal, confirm: true }), DONE[signal]);
+
+function ask(signal) {
+  const dlg = $("confirm");
+  $("c-title").textContent = signal === "stop" ? "Arrêter le serveur ?" : "Redémarrer le serveur ?";
+  $("c-warned").checked = false;
+  $("c-ok").disabled = true;
+  dlg.dataset.signal = signal;
+  dlg.showModal();
+  $("c-warned").focus();
+}
+
+function fmtSize(n) {
+  return n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + " Go" : (n / 2 ** 20).toFixed(1) + " Mo";
+}
+
+async function loadBackups() {
+  const body = $("b-body");
+  try {
+    const rows = await call("/backups");
+    body.replaceChildren();
+    for (const b of rows) {
+      const st = b.is_successful === null ? "en cours" : b.is_successful ? "" : "échec";
+      row(body, [b.name, fmtSize(b.bytes), new Date(b.created_at).toLocaleString("fr-FR"), st]);
+    }
+  } catch (err) {
+    $("b-msg").textContent = failure(err);
+  }
+}
+
 function tick() {
   if (!document.hidden) refreshStatus();
 }
@@ -107,8 +193,23 @@ async function start() {
   }
   $("status").hidden = false;
   $("journal").hidden = false;
+  $("backups").hidden = false;
+  canAct = me.level === "action";
+  $("actions").hidden = !canAct;
+  $("b-actions").hidden = !canAct;
+  for (const b of document.querySelectorAll("[data-signal]")) {
+    b.addEventListener("click", () => (b.dataset.signal === "start" ? power("start") : ask(b.dataset.signal)));
+  }
+  $("b-create").addEventListener("click", () => act("b-msg", () => post("/backups", {}), "Sauvegarde lancée."));
+  $("c-warned").addEventListener("change", () => ($("c-ok").disabled = !$("c-warned").checked));
+  $("c-cancel").addEventListener("click", () => $("confirm").close());
+  $("c-ok").addEventListener("click", () => {
+    const signal = $("confirm").dataset.signal;
+    $("confirm").close();
+    power(signal);
+  });
   try {
-    await Promise.all([refreshStatus(), loadJournal(), me.is_admin ? loadAccess() : null]);
+    await Promise.all([refreshStatus(), loadJournal(), loadBackups(), me.is_admin ? loadAccess() : null]);
   } catch (code) {
     say(failure(code));
   }

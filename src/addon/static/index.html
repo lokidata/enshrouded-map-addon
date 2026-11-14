@@ -24,6 +24,40 @@
     <p id="s-err" role="status"></p>
   </section>
 
+  <section id="actions" hidden aria-labelledby="h-actions">
+    <h2 id="h-actions">Actions</h2>
+    <p>
+      <button type="button" id="act-start" data-signal="start">Démarrer</button>
+      <button type="button" id="act-stop" data-signal="stop">Arrêter</button>
+      <button type="button" id="act-restart" data-signal="restart">Redémarrer</button>
+    </p>
+    <p id="act-msg" role="status"></p>
+  </section>
+
+  <section id="backups" hidden aria-labelledby="h-backups">
+    <h2 id="h-backups">Sauvegardes</h2>
+    <p id="b-actions" hidden><button type="button" id="b-create">Créer une sauvegarde</button></p>
+    <p id="b-msg" role="status"></p>
+    <div class="scroll" tabindex="0" role="region" aria-labelledby="h-backups">
+      <table>
+        <thead><tr><th>Nom</th><th>Taille</th><th>Date</th><th>Statut</th></tr></thead>
+        <tbody id="b-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <dialog id="confirm" aria-labelledby="c-title">
+    <h2 id="c-title"></h2>
+    <p>
+      <input type="checkbox" id="c-warned">
+      <label for="c-warned">J'ai prévenu les joueurs</label>
+    </p>
+    <p>
+      <button type="button" id="c-ok" disabled>Confirmer</button>
+      <button type="button" id="c-cancel">Annuler</button>
+    </p>
+  </dialog>
+
   <section id="journal" hidden aria-labelledby="h-journal">
     <h2 id="h-journal">Journal</h2>
     <div class="scroll" tabindex="0" role="region" aria-labelledby="h-journal">
