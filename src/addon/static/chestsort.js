@@ -7,20 +7,24 @@ const CS_REASONS = {
   invalid_content: "Le contenu est refusé.",
   backup_failed: "La copie de secours a échoué : rien n'a été modifié.",
   verify_failed: "L'écriture n'a pas pu être vérifiée : l'ancien contenu a été remis, vérifiez le fichier.",
-  rollback_failed: "L'écriture a échoué et l'ancien contenu n'a pas pu être remis : vérifiez le fichier dans le panneau.",
+  rollback_failed: "L'écriture a échoué et l'ancien contenu n'a pas pu être remis : le fichier est peut-être abîmé. Restaurez la copie de secours (bouton Restaurer ou panneau).",
+  file_not_utf8: "Le fichier n'est pas en UTF-8 : rien n'a été modifié, corrigez-le dans le panneau.",
   invalid_backup_name: "Nom de copie invalide.",
   unknown_backup: "Cette copie n'existe plus.",
   confirmation_required: "Confirmez d'abord que vous avez relu.",
 };
 
-let cs = { cats: {}, hash: "", selected: null, previewed: false, edit: false };
+// version: bumped by every edit, so a preview answer for older content is dropped
+let cs = { cats: {}, hash: "", selected: null, previewed: false, edit: false, version: 0 };
 
 function csFail(err) {
-  const base = CS_REASONS[err.detail] || failure(err);
+  let base = CS_REASONS[err.detail] || failure(err);
+  if (err.backup) base += " Copie à restaurer : " + err.backup + ".";
   return err.errors && err.errors.length ? base + "\n- " + err.errors.join("\n- ") : base;
 }
 
-const csLines = (text) => text.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+// only empty lines are dropped: a line is kept exactly as typed (the diff shows it)
+const csLines = (text) => text.split("\n").filter((l) => l !== "");
 
 function csShowErr(text) {
   $("cs-err").textContent = text;
@@ -28,6 +32,7 @@ function csShowErr(text) {
 }
 
 function csDirty() {
+  cs.version++;
   cs.previewed = false;
   $("cs-save").disabled = true;
   $("cs-diff").textContent = "";
@@ -45,6 +50,7 @@ function csFillList(keep) {
 function csFillEditors() {
   const c = cs.selected === null ? { words: [], items: [] } : cs.cats[cs.selected];
   $("cs-name").value = cs.selected ?? "";
+  $("cs-words").disabled = $("cs-items").disabled = cs.selected === null;
   $("cs-words").value = c.words.join("\n");
   $("cs-words-n").textContent = c.words.length + " mots";
   $("cs-filter").value = "";
@@ -94,8 +100,10 @@ async function csLoadBackups() {
 async function csPreview() {
   csShowErr("");
   $("cs-msg").textContent = "";
+  const version = cs.version;
   try {
     const r = await post("/chestsort/preview", { categories: cs.cats });
+    if (version !== cs.version) return; // edited meanwhile: this diff is not the current content
     const out = [];
     if (r.errors.length) out.push("Erreurs :", ...r.errors.map((e) => "- " + e), "");
     if (r.warnings.length) out.push("Avertissements :", ...r.warnings.map((w) => "- " + w), "");
@@ -170,11 +178,13 @@ function initChestsort(me) {
   $("cs-reload").addEventListener("click", csLoad);
   if (cs.edit) {
     $("cs-words").addEventListener("input", () => {
+      if (cs.selected === null) return;
       cs.cats[cs.selected].words = csLines($("cs-words").value);
       $("cs-words-n").textContent = cs.cats[cs.selected].words.length + " mots";
       csDirty();
     });
     $("cs-items").addEventListener("input", () => {
+      if (cs.selected === null) return;
       cs.cats[cs.selected].items = csLines($("cs-items").value);
       $("cs-items-n").textContent = cs.cats[cs.selected].items.length + " objets";
       csDirty();

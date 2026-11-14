@@ -127,6 +127,21 @@ def test_warnings() -> None:
     assert any("Nourriture" in w and "vide" in w for w in r.warnings)
 
 
+@pytest.mark.parametrize(
+    ("cats", "needle"),
+    [
+        ({"A": {"words": ["\ud800"], "items": []}}, "« A » : « words »"),
+        ({"A": {"words": [], "items": ["x\udfff"]}}, "« A » : « items »"),
+        ({"\ud800b": {"words": [], "items": []}}, "nom de catégorie"),
+        ({"A": {"words": [], "items": [], "\ud800": 1}}, "clé inconnue"),
+    ],
+)
+def test_lone_surrogates_are_refused_with_printable_messages(cats: Any, needle: str) -> None:
+    r = cs.validate({"categories": cats})
+    assert any(needle in m for m in r.errors), r.errors
+    "".join(r.errors + r.warnings).encode()  # the messages themselves must be valid UTF-8
+
+
 def test_sha256() -> None:
     assert len(cs.sha256("é")) == 64
     assert cs.sha256("a") == cs.sha256("a") != cs.sha256("b")
@@ -151,6 +166,16 @@ def test_bak_name() -> None:
     assert cs.is_bak_name("chestsort_categories.json", n)
 
 
+def test_bak_name_never_reuses_a_taken_name() -> None:
+    now = datetime(2026, 11, 14, 9, 8, 7, tzinfo=UTC)
+    base = "chestsort_categories.json"
+    first = f"{base}.bak-20261114-090807"
+    assert cs.bak_name(base, now, {first}) == first + "-2"
+    assert cs.bak_name(base, now, {first, first + "-2"}) == first + "-3"
+    for name in (first + "-2", first + "-10"):
+        assert cs.is_bak_name(base, name)
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -163,6 +188,11 @@ def test_bak_name() -> None:
         "other.json.bak-20261114-090807",
         "chestsort_categories.json.bak-20261114-090807\n",
         "chestsort_categories.json.bak-２０２６1114-090807",
+        "chestsort_categories.json.bak-20261114-090807-",
+        "chestsort_categories.json.bak-20261114-090807-0",
+        "chestsort_categories.json.bak-20261114-090807-02",
+        "chestsort_categories.json.bak-20261114-090807-2/../x",
+        "../chestsort_categories.json.bak-20261114-090807-2",
     ],
 )
 def test_is_bak_name_rejects(name: str) -> None:

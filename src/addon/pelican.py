@@ -30,6 +30,10 @@ class PelicanRejected(Exception):
     pass
 
 
+class PelicanBadContent(Exception):
+    """The file is not valid UTF-8: it is never decoded lossily (a .bak would be damaged)."""
+
+
 @dataclass(frozen=True)
 class ServerStatus:
     name: str
@@ -151,7 +155,11 @@ class PelicanClient:
 
     async def read_file(self, path: str) -> str:
         resp = await self._request("GET", "/files/contents", params={"file": path})
-        return resp.text
+        try:
+            return resp.content.decode("utf-8")  # strict; a BOM and CRLF are kept as they are
+        except UnicodeDecodeError:
+            self._fail("bad_content", resp.status_code, "not utf-8")
+            raise PelicanBadContent("file is not utf-8") from None
 
     async def write_file(self, path: str, text: str) -> None:
         await self._request(

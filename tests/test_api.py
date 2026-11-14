@@ -3,6 +3,7 @@ import json
 import logging
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,10 +63,16 @@ class Fake:
         # (op, path) -> one answer per call, in order: a status, or None to serve normally
         self.fail: dict[tuple[str, str], list[int | None]] = {}
         self.mangle: set[str] = set()  # next write to that path stores something else
+        self.raw: dict[str, bytes] = {}  # served as is by a read (e.g. not UTF-8), before files
+        # "METHOD path" -> seconds to stall after answering, one per call (the call has applied)
+        self.stall: dict[str, list[float]] = {}
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(self.delay)  # lets concurrent requests interleave
-        return self.respond(request)
+        resp = self.respond(request)
+        if stall := self.stall.get(f"{request.method} {request.url.params.get('file')}"):
+            await asyncio.sleep(stall.pop(0))
+        return resp
 
     def respond(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "panel.example.test":
@@ -118,6 +125,8 @@ class Fake:
                 if f.rsplit("/", 1)[0] + "/" == target
             ]
             return httpx.Response(200, json={"data": names})
+        if target in self.raw:
+            return httpx.Response(200, content=self.raw[target])
         if target not in self.files:
             return httpx.Response(404)
         return httpx.Response(200, text=self.files[target])
@@ -839,6 +848,7 @@ def test_preview_shows_diff_and_writes_nothing(cs: TestClient, fake: Fake) -> No
     body = resp.json()
     assert (body["errors"], body["changed"]) == ([], True)
     assert '+        "bûche"' in body["diff"] and '-        "bois"' in body["diff"]
+    cs.app.state.throttle = Throttle()  # type: ignore[attr-defined]  # 1 s preview window
     same = post(cs, "/chestsort/preview", json={"categories": CS_OBJ["categories"]}).json()
     assert (same["changed"], same["diff"]) == (False, [])
     assert fake.writes() == [] and actions(cs) == []  # a preview is not journalled
@@ -861,6 +871,7 @@ def test_save_writes_backup_then_file(cs: TestClient, fake: Fake) -> None:
     assert fake.writes() == ["/" + name, CS]
     assert fake.file_ops == [
         ("read", CS),
+        ("list", "/"),  # a .bak name is never reused
         ("write", "/" + name),
         ("read", "/" + name),
         ("write", CS),
@@ -980,28 +991,49 @@ def test_read_back_failing_rolls_back(cs: TestClient, fake: Fake) -> None:
     assert [a[3] for a in actions(cs)] == ["rolled_back"]
 
 
-def test_rollback_failing_is_journalled(cs: TestClient, fake: Fake) -> None:
+@pytest.mark.parametrize(
+    "fail",
+    [{("write", CS): [None, 500]}, {("read", CS): [None, None, 500]}],  # rollback write / check
+)
+def test_rollback_failing_is_rollback_failed_with_the_bak_name(
+    cs: TestClient, fake: Fake, fail: dict[tuple[str, str], list[int | None]]
+) -> None:
     fake.mangle.add(CS)
-    fake.fail[("write", CS)] = [None, 500]
+    fake.fail = fail
+    resp = save(cs)
+    assert resp.status_code == 502
+    assert resp.json() == {"detail": "rollback_failed", "backup": bak(fake)[1:]}
+    assert [a[3] for a in actions(cs)] == ["rollback_failed"]
+    assert save(cs).status_code == 429
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_read_back_refused_rolls_back(cs: TestClient, fake: Fake, code: int) -> None:
+    fake.fail[("read", CS)] = [None, code]
     resp = save(cs)
     assert (resp.status_code, resp.json()) == (502, {"detail": "verify_failed"})
-    assert [a[3] for a in actions(cs)] == ["rollback_failed"]
+    assert fake.writes()[1:] == [CS, CS] and fake.files[CS] == CS_TEXT
+    assert [a[3] for a in actions(cs)] == ["rolled_back"]
+    assert save(cs).status_code == 429  # the new write was attempted: the window started
 
 
 @pytest.mark.parametrize(
-    ("code", "detail", "journal", "window"),
+    ("code", "status", "detail", "journal", "window"),
     [
-        (500, "verify_failed", "rolled_back", True),  # may be half written: roll back
-        (403, "pelican_denied", "pelican_denied", False),  # refused: nothing written
+        (500, 502, "verify_failed", "rolled_back", True),  # may be half written: roll back
+        (403, 502, "pelican_denied", "pelican_denied", False),  # refused: nothing written
+        (404, 502, "pelican_not_found", "pelican_not_found", False),
+        (422, 409, "pelican_rejected", "pelican_rejected", False),
     ],
 )
 def test_file_write_failing(
-    cs: TestClient, fake: Fake, code: int, detail: str, journal: str, window: bool
+    cs: TestClient, fake: Fake, code: int, status: int, detail: str, journal: str, window: bool
 ) -> None:
     fake.fail[("write", CS)] = [code]
     resp = save(cs)
-    assert (resp.status_code, resp.json()) == (502, {"detail": detail})
+    assert (resp.status_code, resp.json()["detail"]) == (status, detail)
     assert fake.files[CS] == CS_TEXT
+    assert fake.writes().count(CS) == (2 if window else 1)  # a refusal is not rolled back
     assert [a[3] for a in actions(cs)] == [journal]
     assert save(cs).status_code == (429 if window else 200)
 
@@ -1126,3 +1158,133 @@ def test_contents_never_in_journal_or_logs(
     logs = " ".join(r.getMessage() + str(r.args) for r in caplog.records)
     assert SECRET_WORD not in logs and KEY not in logs
     assert "categories=3 items=" in logs
+
+
+def test_backup_name_never_overwrites_an_existing_copy(
+    cs: TestClient, fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> "Frozen":
+            return cls(2026, 11, 14, 9, 8, 7, tzinfo=tz)
+
+    monkeypatch.setattr(api, "datetime", Frozen)
+    first = CS + ".bak-20261114-090807"
+    fake.files[first], fake.files[first + "-2"] = "original", "older"
+    resp = save(cs)
+    assert resp.json()["backup"] == "chestsort_categories.json.bak-20261114-090807-3"
+    assert (fake.files[first], fake.files[first + "-2"]) == ("original", "older")
+    assert fake.files[first + "-3"] == CS_TEXT
+
+
+NOT_UTF8 = b'{"categories": {"A": {"words": ["\xe9"], "items": []}}}'
+
+
+def test_non_utf8_file_is_422_and_nothing_written(cs: TestClient, fake: Fake) -> None:
+    fake.raw[CS] = NOT_UTF8
+    for resp in (
+        cs.get("/addon/api/chestsort", headers=as_("admin")),
+        post(cs, "/chestsort/preview", json={"categories": NEW_CATS}),
+        save(cs),
+    ):
+        assert (resp.status_code, resp.json()) == (422, {"detail": "file_not_utf8"})
+    assert fake.writes() == []
+    assert actions(cs) == [("root", "chestsort", "save", "file_not_utf8", None)]
+
+
+def test_restore_of_a_non_utf8_backup_writes_nothing(cs: TestClient, fake: Fake) -> None:
+    name = "chestsort_categories.json.bak-20260101-000000"
+    fake.files["/" + name] = CS_TEXT  # listed
+    fake.raw["/" + name] = NOT_UTF8  # but not UTF-8 when read
+    resp = restore(cs, name)
+    assert (resp.status_code, resp.json()) == (422, {"detail": "file_not_utf8"})
+    assert fake.writes() == []
+    assert [a[3] for a in actions(cs)] == ["file_not_utf8"]
+
+
+def test_deeply_nested_body_is_422_not_500(cs: TestClient, fake: Fake) -> None:
+    deep = "[" * 100_000 + "]" * 100_000
+    resp = post(cs, "/chestsort/preview", content='{"categories": ' + deep + "}")
+    assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_request"})
+    resp = cs.put(
+        "/addon/api/chestsort", headers=as_("admin", WRITE), content='{"categories": ' + deep + "}"
+    )
+    assert (resp.status_code, resp.json()) == (422, {"detail": "invalid_request"})
+    assert actions(cs) == [("root", "chestsort", "save", "invalid_request", None)]
+
+
+@pytest.mark.parametrize(
+    "cats",
+    [
+        '{"\\ud800": {"words": [], "items": []}}',
+        '{"A": {"words": ["\\ud800"], "items": []}}',
+        '{"A": {"words": [], "items": ["x\\udfff"]}}',
+        '{"A": {"words": [], "items": [], "\\ud800": 1}}',
+    ],
+)
+def test_lone_surrogate_is_refused_not_500(cs: TestClient, fake: Fake, cats: str) -> None:
+    resp = post(cs, "/chestsort/preview", content='{"categories": ' + cats + "}")
+    assert resp.status_code == 200 and resp.json()["errors"]
+    body = f'{{"categories": {cats}, "base_hash": "{chestsort.sha256(CS_TEXT)}", "confirm": true}}'
+    resp = cs.put("/addon/api/chestsort", headers=as_("admin", WRITE), content=body)
+    assert (resp.status_code, resp.json()["detail"]) == (422, "invalid_content")
+    assert fake.writes() == []
+
+
+def test_timeout_after_the_new_write_rolls_back(
+    cs: TestClient, fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "ACTION_TIMEOUT", 0.2)
+    fake.stall["POST " + CS] = [1.0]  # the new content is written, then the panel hangs
+    resp = save(cs)
+    assert (resp.status_code, resp.json()) == (504, {"detail": "pelican_timeout"})
+    assert fake.files[CS] == CS_TEXT and fake.writes()[1:] == [CS, CS]
+    assert [a[3] for a in actions(cs)] == ["timeout_rolled_back"]
+    assert save(cs).status_code == 429
+
+
+@pytest.mark.parametrize("hang", [False, True])
+def test_timeout_after_the_new_write_with_a_failed_rollback(
+    cs: TestClient, fake: Fake, monkeypatch: pytest.MonkeyPatch, hang: bool
+) -> None:
+    monkeypatch.setattr(api, "ACTION_TIMEOUT", 0.2)
+    monkeypatch.setattr(api, "ROLLBACK_TIMEOUT", 0.2)
+    fake.stall["POST " + CS] = [1.0, 1.0]
+    if not hang:
+        fake.fail[("write", CS)] = [None, 500]
+    resp = save(cs)
+    assert resp.status_code == 502
+    assert resp.json() == {"detail": "rollback_failed", "backup": bak(fake)[1:]}
+    assert [a[3] for a in actions(cs)] == ["timeout"]
+    assert save(cs).status_code == 429
+
+
+def test_preview_is_rate_limited_for_1_s_and_not_journalled(cs: TestClient, fake: Fake) -> None:
+    now = [100.0]
+    cs.app.state.throttle = Throttle(lambda: now[0])  # type: ignore[attr-defined]
+    assert post(cs, "/chestsort/preview", json={"categories": NEW_CATS}).status_code == 200
+    resp = post(cs, "/chestsort/preview", json={"categories": NEW_CATS})
+    assert (resp.status_code, resp.headers["Retry-After"]) == (429, "1")
+    assert resp.json() == {"detail": "rate_limited", "retry_after": 1}
+    now[0] += 1
+    assert post(cs, "/chestsort/preview", json={"categories": NEW_CATS}).status_code == 200
+    assert save(cs).status_code == 200  # its own window
+    assert actions(cs) == [("root", "chestsort", "save", "ok", None)]
+
+
+def test_preview_diff_runs_off_the_event_loop(
+    cs: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orig, seen = chestsort.unified_diff, []
+
+    def spy(old: str, new: str) -> list[str]:
+        try:
+            asyncio.get_running_loop()
+            seen.append("loop")
+        except RuntimeError:
+            seen.append("thread")
+        return orig(old, new)
+
+    monkeypatch.setattr(chestsort, "unified_diff", spy)
+    assert post(cs, "/chestsort/preview", json={"categories": NEW_CATS}).status_code == 200
+    assert seen == ["thread"]

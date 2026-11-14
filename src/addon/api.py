@@ -22,6 +22,7 @@ from addon import chestsort
 from addon.config import Settings, get_settings
 from addon.identity import Identity, SiteUnavailable, Unauthenticated, who_am_i
 from addon.pelican import (
+    PelicanBadContent,
     PelicanClient,
     PelicanDenied,
     PelicanNotFound,
@@ -46,6 +47,8 @@ BACKUP_WINDOW = 300
 LOCK_WAIT = 5  # seconds a second action waits for the lock before `busy`
 ACTION_TIMEOUT = 25  # seconds for the whole locked section (status read + Pelican call)
 CHESTSORT_WINDOW = 10
+PREVIEW_WINDOW = 1  # global; a preview reads the file and runs a diff
+ROLLBACK_TIMEOUT = 10  # fresh budget for the rollback after ACTION_TIMEOUT fired
 MAX_BYTES = 1_000_000  # chestsort file and request bodies
 BACKUPS_SHOWN = 20
 NEEDS_STATE = {"start": "offline", "stop": "running", "restart": "running"}
@@ -69,9 +72,10 @@ class Refused(Exception):
         retry_after: int | None = None,
         journal: str | None = None,  # journal result when it differs from the response detail
         errors: list[str] | None = None,  # validation messages, sent back but never journalled
+        backup: str | None = None,  # the .bak to restore from when a rollback failed
     ) -> None:
         self.code, self.reason, self.status, self.retry_after = code, reason, status, retry_after
-        self.journal, self.errors = journal or reason, errors
+        self.journal, self.errors, self.backup = journal or reason, errors, backup
 
 
 def check_write(request: Request) -> None:
@@ -233,6 +237,8 @@ async def journalled(
             )
         if r.errors:
             return JSONResponse({"detail": r.reason, "errors": r.errors}, status_code=r.code)
+        if r.backup:
+            return JSONResponse({"detail": r.reason, "backup": r.backup}, status_code=r.code)
         raise HTTPException(r.code, r.reason) from r
     except Exception:  # a bug must not hide an attempt that may have reached Pelican
         log.exception("internal_error action=%s", action)  # target is journalled, not logged
@@ -258,8 +264,16 @@ async def throttled(request: Request, key: str, seconds: int, call: Any) -> Any:
     return result
 
 
-async def locked(request: Request, key: str, work: Any) -> Any:
-    """One action at a time, bounded: wait LOCK_WAIT for the lock, ACTION_TIMEOUT inside it."""
+async def locked(
+    request: Request,
+    key: str,
+    work: Any,
+    on_timeout: Callable[[], Awaitable[None]] | None = None,
+) -> Any:
+    """One action at a time, bounded: wait LOCK_WAIT for the lock, ACTION_TIMEOUT inside it.
+
+    `on_timeout` runs still under the lock, outside the cancelled work; it may raise its Refused.
+    """
     lock: asyncio.Lock = request.app.state.action_lock
     try:
         await asyncio.wait_for(lock.acquire(), LOCK_WAIT)
@@ -270,6 +284,8 @@ async def locked(request: Request, key: str, work: Any) -> Any:
             return await work()
     except TimeoutError:
         request.app.state.throttle.mark(key)  # outcome unknown: Pelican may have acted
+        if on_timeout is not None:
+            await on_timeout()
         raise Refused(504, "pelican_timeout", journal="timeout") from None
     finally:
         lock.release()
@@ -378,7 +394,8 @@ async def read_json(request: Request, model: type[Any]) -> Any:
         chunks.append(chunk)
     try:
         return model.model_validate(json.loads(b"".join(chunks)))
-    except (ValueError, ValidationError):  # ValidationError is a ValueError; listed for clarity
+    # ValidationError is a ValueError; RecursionError: a deeply nested body
+    except (ValueError, ValidationError, RecursionError):
         raise Refused(422, "invalid_request") from None
 
 
@@ -387,7 +404,10 @@ def check_categories(categories: Any) -> chestsort.Report:
 
 
 async def read_text(pelican: PelicanClient, path: str) -> str:
-    text: str = await pelican.read_file(path)
+    try:
+        text: str = await pelican.read_file(path)
+    except PelicanBadContent:
+        raise Refused(422, "file_not_utf8") from None  # never decoded lossily, nothing written
     if len(text.encode()) > MAX_BYTES:
         raise Refused(413, "too_large")
     return text
@@ -409,43 +429,88 @@ async def current_file(request: Request, path: str) -> tuple[str, dict[str, Any]
 NewText = Callable[[str], Awaitable[tuple[str, dict[str, Any]]]]
 
 
-async def replace_file(request: Request, path: str, base_hash: str, new: NewText) -> dict[str, Any]:
-    """Read, check the hash, back up and verify, write, verify, roll back on a mismatch."""
+async def same_text(pelican: PelicanClient, path: str, expected: str) -> bool:
+    """Read-back check; any failure to read counts as a mismatch."""
+    try:
+        return await pelican.read_file(path) == expected
+    except (*PELICAN_FAILURES, PelicanBadContent):
+        return False
+
+
+async def rollback(pelican: PelicanClient, undo: dict[str, str]) -> bool:
+    try:
+        await pelican.write_file(undo["path"], undo["current"])
+    except PELICAN_FAILURES:
+        return False
+    return await same_text(pelican, undo["path"], undo["current"])
+
+
+async def replace_file(
+    request: Request, path: str, base_hash: str, new: NewText, undo: dict[str, str]
+) -> dict[str, Any]:
+    """Read, check the hash, back up and verify, write, verify, roll back on any failure.
+
+    `undo` is filled once the new write is attempted, for the rollback after a timeout.
+    """
     pelican: PelicanClient = request.app.state.pelican
     current = await read_text(pelican, path)
     if chestsort.sha256(current) != base_hash:
         raise Refused(409, "changed_elsewhere")
     text, obj = await new(current)
     folder, base = posixpath.split(path)
-    backup = chestsort.bak_name(base, datetime.now(UTC))
+    # under the lock: a name already in the folder is never reused (it may be the only copy)
+    backup = chestsort.bak_name(base, datetime.now(UTC), set(await pelican.list_files(folder)))
     await pelican.write_file(posixpath.join(folder, backup), current)
-    if await pelican.read_file(posixpath.join(folder, backup)) != current:
+    if not await same_text(pelican, posixpath.join(folder, backup), current):
         raise Refused(502, "backup_failed")  # the new content is never written without a copy
+    undo.update(path=path, current=current, backup=backup)
     try:
         await pelican.write_file(path, text)
-        verified = await pelican.read_file(path) == text
+    except (PelicanDenied, PelicanNotFound, PelicanRejected):
+        undo.clear()  # a definitive refusal: nothing was applied, no rollback, no window
+        raise
     except PelicanUnavailable:  # 5xx or unreachable: the file may be half written
         verified = False
+    else:
+        verified = await same_text(pelican, path, text)
     if not verified:
         request.app.state.throttle.mark("chestsort")  # the new content may have been applied
-        try:
-            await pelican.write_file(path, current)
-            restored = await pelican.read_file(path) == current
-        except PELICAN_FAILURES:
-            restored = False
-        raise Refused(
-            502, "verify_failed", journal="rolled_back" if restored else "rollback_failed"
-        )
+        if not await rollback(pelican, undo):
+            raise Refused(502, "rollback_failed", backup=backup)
+        raise Refused(502, "verify_failed", journal="rolled_back")
     cats = obj["categories"]
     items = sum(len(c["items"]) for c in cats.values())
     log.info("chestsort_written categories=%d items=%d bak=%s", len(cats), items, backup)
     return {"backup": backup, "hash": chestsort.sha256(text)}
 
 
-async def chestsort_locked(request: Request, call: Callable[[], Awaitable[Any]]) -> Any:
-    """Shares the action lock; save and restore share one 10 s window."""
+async def chestsort_locked(
+    request: Request, call: Callable[[dict[str, str]], Awaitable[Any]]
+) -> Any:
+    """Shares the action lock; save and restore share one 10 s window.
+
+    A timeout after the new write was attempted rolls back with a fresh ROLLBACK_TIMEOUT.
+    """
+    undo: dict[str, str] = {}
+
+    async def after_timeout() -> None:
+        if not undo:
+            return  # the new content was never sent
+        try:
+            restored = await asyncio.wait_for(
+                rollback(request.app.state.pelican, undo), ROLLBACK_TIMEOUT
+            )
+        except TimeoutError:
+            restored = False
+        if not restored:
+            raise Refused(502, "rollback_failed", journal="timeout", backup=undo["backup"])
+        raise Refused(504, "pelican_timeout", journal="timeout_rolled_back")
+
     return await locked(
-        request, "chestsort", lambda: throttled(request, "chestsort", CHESTSORT_WINDOW, call)
+        request,
+        "chestsort",
+        lambda: throttled(request, "chestsort", CHESTSORT_WINDOW, lambda: call(undo)),
+        after_timeout,
     )
 
 
@@ -460,8 +525,19 @@ async def chestsort_view(request: Request, path: ChestPath, who: Reader) -> dict
     }
 
 
-@router.post("/chestsort/preview")
-async def chestsort_preview(request: Request, path: ChestPath, who: Actor) -> dict[str, Any]:
+@router.post("/chestsort/preview", response_model=None)
+async def chestsort_preview(
+    request: Request, path: ChestPath, who: Actor
+) -> dict[str, Any] | JSONResponse:
+    # not journalled; no lock (it writes nothing), but one per second for everyone
+    throttle: Throttle = request.app.state.throttle
+    if (wait := throttle.retry_after("chestsort_preview", PREVIEW_WINDOW)) is not None:
+        return JSONResponse(
+            {"detail": "rate_limited", "retry_after": wait},
+            status_code=429,
+            headers={"Retry-After": str(wait)},
+        )
+    throttle.mark("chestsort_preview")
     try:
         body = await read_json(request, PreviewBody)
     except Refused as r:
@@ -469,12 +545,14 @@ async def chestsort_preview(request: Request, path: ChestPath, who: Actor) -> di
     current, obj = await current_file(request, path)
     report = check_categories(body.categories)
     text = chestsort.dump({**obj, "categories": body.categories})
-    if len(text.encode()) > MAX_BYTES:
+    # "replace": a lone surrogate (an error in the report) must not raise here nor in the answer
+    shown = text.encode(errors="replace")
+    if len(shown) > MAX_BYTES:
         raise HTTPException(413, "too_large")
     return {
         "errors": report.errors,
         "warnings": report.warnings,
-        "diff": chestsort.unified_diff(current, text),
+        "diff": await asyncio.to_thread(chestsort.unified_diff, current, shown.decode()),
         "changed": text != current,
     }
 
@@ -501,7 +579,7 @@ async def chestsort_save(
             return text, obj
 
         result: dict[str, Any] = await chestsort_locked(
-            request, lambda: replace_file(request, path, body.base_hash, merged)
+            request, lambda undo: replace_file(request, path, body.base_hash, merged, undo)
         )
         return result
 
@@ -545,10 +623,10 @@ async def chestsort_restore(
                 raise Refused(422, "invalid_content", errors=errors)
             return text, obj  # restored byte for byte
 
-        async def work() -> dict[str, Any]:
+        async def work(undo: dict[str, str]) -> dict[str, Any]:
             if body.name not in await pelican.list_files(folder):
                 raise Refused(404, "unknown_backup")
-            return await replace_file(request, path, body.base_hash, from_backup)
+            return await replace_file(request, path, body.base_hash, from_backup, undo)
 
         result: dict[str, Any] = await chestsort_locked(request, work)
         return result

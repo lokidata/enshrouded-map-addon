@@ -28,7 +28,7 @@ Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack i
 MIT licence, see `LICENSE`.
 
 ## Chestsort editor (optional)
-Set `CHESTSORT_FILE` to the mod's categories file from the server root (e.g. `/chestsort_categories.json`) to show the "Catégories de coffres" card: view for level `read`, edit and restore for `action`, with validation, a diff, a dated `.bak-` copy before each write and a read-back check with rollback. Off when unset. Rules: `docs/RULES.md`. The write is `POST files/write?file=<path>` with the raw body (204).
+Set `CHESTSORT_FILE` to the mod's categories file from the server root (e.g. `/chestsort_categories.json`) to show the "Catégories de coffres" card: view for level `read`, edit and restore for `action`, with validation, a diff (one preview per second), a dated `.bak-` copy before each write (never overwriting an existing one: `-2`, `-3`... suffix), a read-back check and a rollback on any failure after the write was sent (also after a timeout); a failed rollback answers `rollback_failed` with the `.bak-` name to restore. A file that is not UTF-8 is refused (`file_not_utf8`), never rewritten. Off when unset. Rules: `docs/RULES.md`. The write is `POST files/write?file=<path>` with the raw body (204).
 
 ## Backups of the save only
 

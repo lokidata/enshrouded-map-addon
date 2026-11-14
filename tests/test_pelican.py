@@ -8,6 +8,7 @@ import pytest
 from addon.config import Settings
 from addon.pelican import (
     Backup,
+    PelicanBadContent,
     PelicanClient,
     PelicanDenied,
     PelicanNotFound,
@@ -414,6 +415,22 @@ def test_read_file_sends_exact_request_and_returns_text() -> None:
     assert req.url.params["file"] == "/a b/é.json"
     assert "%20" in str(req.url) or "+" in str(req.url)  # encoded by httpx, not by hand
     assert req.headers["Authorization"] == "Bearer pacc_TEST"
+
+
+def test_read_file_keeps_bom_and_crlf() -> None:
+    raw = b"\xef\xbb\xbf{}\r\nx"
+    assert run_client(lambda r: httpx.Response(200, content=raw), "read_file", "/f") == (
+        "\ufeff{}\r\nx"
+    )
+
+
+@pytest.mark.parametrize("ctype", ["text/plain", "text/plain; charset=latin-1"])
+def test_read_file_refuses_non_utf8_bytes(ctype: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b'{"a": "\xe9"}', headers={"Content-Type": ctype})
+
+    with pytest.raises(PelicanBadContent):
+        run_client(handler, "read_file", "/f")
 
 
 def test_write_file_posts_raw_utf8_body_and_round_trips() -> None:

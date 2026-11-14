@@ -113,7 +113,23 @@ def test_chestsort_every_reason_has_a_french_message(client: TestClient) -> None
     for reason in (
         "changed_elsewhere", "too_large", "file_invalid", "backup_failed", "verify_failed",
         "rollback_failed", "invalid_backup_name", "unknown_backup", "invalid_content",
-        "confirmation_required", "pelican_unavailable", "pelican_denied",
+        "confirmation_required", "file_not_utf8", "pelican_unavailable", "pelican_denied",
         "pelican_not_found", "pelican_timeout", "forbidden", "busy",
     ):  # fmt: skip
         assert reason in js or reason in client.get("/addon/app.js").text, reason
+
+
+def test_chestsort_review_fixes_in_the_page(client: TestClient) -> None:
+    js = client.get("/addon/chestsort.js").text
+    lines = re.search(r"const csLines = [^\n]*", js)
+    assert lines and ".trim()" not in lines.group(0)  # items with spaces are kept as typed
+    preview = js.split("async function csPreview")[1].split("\nfunction ")[0]
+    assert "cs.version" in preview and "!== cs.version" in preview  # stale answers dropped
+    assert "cs.version++" in js.split("function csDirty")[1].split("\n}")[0]
+    # no category selected: the boxes are disabled and the handlers do nothing
+    assert '$("cs-words").disabled = $("cs-items").disabled = cs.selected === null' in js
+    assert js.count("if (cs.selected === null) return;") >= 2
+    rollback = js.split("rollback_failed:")[1].split("\n")[0]
+    assert "abîmé" in rollback
+    assert "err.backup" in js
+    assert "backup: body.backup" in client.get("/addon/app.js").text

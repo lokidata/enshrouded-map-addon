@@ -11,7 +11,7 @@ async function call(path, init) {
   const resp = await fetch(API + path, { credentials: "same-origin", ...init });
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
-    throw { status: resp.status, detail: body.detail, wait: body.retry_after, errors: body.errors };
+    throw { status: resp.status, detail: body.detail, wait: body.retry_after, errors: body.errors, backup: body.backup };
   }
   return resp.json();
 }
