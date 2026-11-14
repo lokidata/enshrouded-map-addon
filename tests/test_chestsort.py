@@ -22,7 +22,8 @@ def sample() -> dict[str, Any]:
 
 
 def test_round_trip_keeps_accents_and_order() -> None:
-    text = json.dumps(SAMPLE, ensure_ascii=False, indent=2) + "\n"
+    # the mod's own file has no trailing newline: dumping must not add one (no noise in the diff)
+    text = json.dumps(SAMPLE, ensure_ascii=False, indent=2)
     assert cs.dump(cs.parse(text)) == text
     assert "Métaux" in text
 

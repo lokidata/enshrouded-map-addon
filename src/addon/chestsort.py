@@ -110,7 +110,8 @@ def validate(obj: dict[str, Any]) -> Report:
 
 
 def dump(obj: dict[str, Any]) -> str:
-    return json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+    # no trailing newline: the mod writes its file without one, so a save shows no spurious diff
+    return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
 def sha256(text: str) -> str:
