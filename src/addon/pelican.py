@@ -113,7 +113,9 @@ class PelicanClient:
             self._fail("unavailable", code, "")
             raise PelicanUnavailable(f"pelican answered {code}")
         self._fail(kinds[code], code, _panel_detail(resp))
-        raise {403: PelicanDenied, 404: PelicanNotFound}.get(code, PelicanRejected)(code)
+        # "rejected" means a refused write; on a GET these codes are an unusable answer
+        other = PelicanRejected if method == "POST" else PelicanUnavailable
+        raise {403: PelicanDenied, 404: PelicanNotFound}.get(code, other)(code)
 
     async def _json(self, method: str, suffix: str, body: dict[str, Any] | None = None) -> Any:
         resp = await self._request(method, suffix, body)
@@ -146,9 +148,17 @@ class PelicanClient:
             self._backup(row.get("attributes") if isinstance(row, dict) else None) for row in rows
         ]
 
-    async def create_backup(self) -> Backup:
-        data = await self._json("POST", "/backups", {})
-        return self._backup(data.get("attributes") if isinstance(data, dict) else None)
+    async def create_backup(self) -> Backup | None:
+        """None: Pelican created it (2xx) but the body could not be parsed (logged)."""
+        resp = await self._request("POST", "/backups", {})
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        try:
+            return self._backup(data.get("attributes") if isinstance(data, dict) else None)
+        except PelicanUnavailable:  # _bad() already logged bad_response
+            return None
 
     def _backup(self, a: Any) -> Backup:
         def opt(key: str, kind: type) -> Any:

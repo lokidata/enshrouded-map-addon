@@ -35,6 +35,8 @@ const REASONS = {
   pelican_denied: "Le panneau refuse l'accès à ce serveur.",
   pelican_not_found: "Serveur introuvable sur le panneau.",
   pelican_unavailable: "Le panneau du serveur est injoignable.",
+  pelican_timeout: "Le panneau n'a pas répondu à temps : l'action a peut-être été faite, vérifiez l'état.",
+  busy: "Une autre action est en cours, réessayez dans quelques secondes.",
   forbidden: "Action non autorisée.",
 };
 
@@ -67,6 +69,8 @@ async function refreshStatus() {
     $("s-err").textContent = "";
   } catch (code) {
     $("s-err").textContent = failure(code);
+    state = ""; // unknown: no power button until a status read succeeds
+    syncButtons();
   }
 }
 
@@ -140,7 +144,8 @@ async function act(target, run, okText) {
     $(target).textContent = failure(err);
   }
   busy = false;
-  await Promise.all([refreshStatus(), loadBackups()]);
+  const journal = $("journal").hidden ? null : loadJournal().catch((err) => say(failure(err)));
+  await Promise.all([refreshStatus(), loadBackups(), journal]);
   syncButtons();
 }
 
@@ -166,12 +171,13 @@ async function loadBackups() {
   try {
     const rows = await call("/backups");
     body.replaceChildren();
+    $("b-err").textContent = "";
     for (const b of rows) {
-      const st = b.is_successful === null ? "en cours" : b.is_successful ? "" : "échec";
+      const st = b.completed_at === null ? "en cours" : b.is_successful === false ? "échec" : "";
       row(body, [b.name, fmtSize(b.bytes), new Date(b.created_at).toLocaleString("fr-FR"), st]);
     }
   } catch (err) {
-    $("b-msg").textContent = failure(err);
+    $("b-err").textContent = failure(err);
   }
 }
 

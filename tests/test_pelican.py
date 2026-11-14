@@ -271,7 +271,7 @@ def test_power_sends_exact_request(code: int) -> None:
         (302, PelicanUnavailable),
     ],
 )
-@pytest.mark.parametrize("method", ["power", "create_backup", "list_backups"])
+@pytest.mark.parametrize("method", ["power", "create_backup"])
 def test_write_error_statuses(status: int, exc: type[Exception], method: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, headers={"Location": "https://evil.example.test/"})
@@ -344,9 +344,21 @@ def test_list_backups_bad_shapes_are_unavailable(body: Any) -> None:
         run_client(lambda request: httpx.Response(200, json=body), "list_backups")
 
 
-def test_create_backup_bad_shape_is_unavailable() -> None:
+@pytest.mark.parametrize("status", [400, 409, 422])
+@pytest.mark.parametrize("method", ["status", "list_backups"])
+def test_get_refusal_codes_are_unavailable(status: int, method: str) -> None:
+    # PelicanRejected means "a write was refused": a GET never raises it
     with pytest.raises(PelicanUnavailable):
-        run_client(lambda request: httpx.Response(200, json={"attributes": {}}), "create_backup")
+        run_client(lambda request: httpx.Response(status), method)
+
+
+def test_create_backup_bad_shape_is_none_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    # Pelican already created the backup: a shape we cannot parse is still a success
+    with caplog.at_level("WARNING", logger="addon.pelican"):
+        result = run_client(
+            lambda request: httpx.Response(200, json={"attributes": {}}), "create_backup"
+        )
+    assert result is None and "bad_response" in caplog.text
 
 
 def test_create_backup_201_parses() -> None:
@@ -357,6 +369,11 @@ def test_create_backup_201_parses() -> None:
 
 
 @pytest.mark.parametrize(("code", "body"), [(201, {}), (202, None), (204, None)])
-def test_create_backup_2xx_without_body_is_unavailable(code: int, body: Any) -> None:
-    with pytest.raises(PelicanUnavailable):
-        run_client(lambda request: httpx.Response(code, json=body), "create_backup")
+def test_create_backup_2xx_without_body_is_none(code: int, body: Any) -> None:
+    assert run_client(lambda request: httpx.Response(code, json=body), "create_backup") is None
+
+
+def test_create_backup_2xx_invalid_json_is_none() -> None:
+    assert (
+        run_client(lambda request: httpx.Response(200, content=b"<html>"), "create_backup") is None
+    )

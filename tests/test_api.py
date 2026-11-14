@@ -10,6 +10,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from addon import api
 from addon.api import create_app
 from addon.config import Settings
 from addon.throttle import Throttle
@@ -53,6 +54,7 @@ class Fake:
         self.power_status = 204
         self.signals: list[str] = []
         self.backup_status = 200
+        self.backup_body: Any = {"attributes": BACKUP}
         self.backups_created = 0
         self.delay = 0.0
 
@@ -69,7 +71,7 @@ class Fake:
                 return httpx.Response(self.power_status)
             if path.endswith("/backups") and request.method == "POST":
                 self.backups_created += 1
-                return httpx.Response(self.backup_status, json={"attributes": BACKUP})
+                return httpx.Response(self.backup_status, json=self.backup_body)
             if self.pelican_status != 200:
                 return httpx.Response(self.pelican_status)
             if path.endswith("/backups"):
@@ -434,13 +436,9 @@ def test_power_is_rate_limited_globally_for_30_s(client: TestClient, fake: Fake)
 
 @pytest.mark.parametrize(
     ("code", "detail", "pstatus"),
-    [
-        (403, "pelican_denied", 403),
-        (404, "pelican_not_found", 404),
-        (500, "pelican_unavailable", None),
-    ],
+    [(403, "pelican_denied", 403), (404, "pelican_not_found", 404)],
 )
-def test_failed_power_is_502_and_does_not_start_the_window(
+def test_refused_power_is_502_and_does_not_start_the_window(
     client: TestClient, fake: Fake, code: int, detail: str, pstatus: int | None
 ) -> None:
     fake.power_status = code
@@ -452,6 +450,80 @@ def test_failed_power_is_502_and_does_not_start_the_window(
         ("root", "power", "stop", detail, pstatus),
         ("root", "power", "stop", "ok", None),
     ]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_unavailable_write_may_have_applied_and_starts_the_window(
+    client: TestClient, fake: Fake, path: str
+) -> None:
+    fake.power_status = fake.backup_status = 500
+    body = {"signal": "stop", "confirm": True}
+    resp = post(client, path, json=body)
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    fake.power_status, fake.backup_status = 204, 200
+    assert post(client, path, json=body).status_code == 429
+    target = "stop" if path == "/power" else "create"
+    assert [a[2:] for a in actions(client)] == [
+        (target, "pelican_unavailable", None),
+        (target, "rate_limited", None),
+    ]
+
+
+@pytest.mark.parametrize("code", [400, 409, 422])
+def test_get_refusal_codes_are_502_unavailable(client: TestClient, fake: Fake, code: int) -> None:
+    fake.pelican_status = code
+    for path in ("/status", "/backups"):
+        resp = client.get(f"/addon/api{path}", headers=as_("admin"))
+        assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    resp = post(client, "/power", json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_unavailable"})
+    assert fake.signals == []
+    assert actions(client) == [("root", "power", "stop", "pelican_unavailable", None)]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_unexpected_error_is_journalled_and_500(
+    client: TestClient, fake: Fake, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def boom(*_: Any) -> None:
+        raise RuntimeError("bug")
+
+    pelican = client.app.state.pelican  # type: ignore[attr-defined]
+    monkeypatch.setattr(pelican, "power", boom)
+    monkeypatch.setattr(pelican, "create_backup", boom)
+    resp = post(client, path, json={"signal": "stop", "confirm": True})
+    assert (resp.status_code, resp.json()) == (500, {"detail": "internal_error"})
+    assert [a[3] for a in actions(client)] == ["internal_error"]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_second_request_waiting_too_long_for_the_lock_is_busy(
+    client: TestClient, fake: Fake, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "LOCK_WAIT", 0.01)
+    fake.delay = 0.2
+
+    def send(_: int) -> int:
+        return post(client, path, json={"signal": "stop", "confirm": True}).status_code
+
+    with ThreadPoolExecutor(2) as pool:
+        codes = sorted(pool.map(send, range(2)))
+    assert codes == [200, 409]
+    assert sorted(a[3] for a in actions(client)) == ["busy", "ok"]
+
+
+@pytest.mark.parametrize("path", ["/power", "/backups"])
+def test_slow_panel_is_504_and_starts_the_window(
+    client: TestClient, fake: Fake, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "ACTION_TIMEOUT", 0.05)
+    fake.delay = 0.2
+    body = {"signal": "stop", "confirm": True}
+    resp = post(client, path, json=body)
+    assert (resp.status_code, resp.json()) == (504, {"detail": "pelican_timeout"})
+    fake.delay = 0
+    assert post(client, path, json=body).status_code == 429  # the lock was released
+    assert [a[3] for a in actions(client)] == ["timeout", "rate_limited"]
 
 
 def test_status_failure_before_power_is_502_and_journalled(client: TestClient, fake: Fake) -> None:
@@ -507,6 +579,17 @@ def test_backup_create_ok_then_rate_limited_for_300_s(client: TestClient, fake: 
         ("root", "backup", "create", "rate_limited", None),
         ("root", "backup", "create", "ok", None),
     ]
+
+
+def test_backup_created_with_unparsable_body_is_ok_and_starts_the_window(
+    client: TestClient, fake: Fake
+) -> None:
+    fake.backup_status, fake.backup_body = 201, {}
+    resp = post(client, "/backups")
+    assert (resp.status_code, resp.json()) == (200, {"backup": None})
+    assert post(client, "/backups").status_code == 429
+    assert fake.backups_created == 1
+    assert [a[3] for a in actions(client)] == ["ok", "rate_limited"]
 
 
 def test_backup_and_power_windows_are_independent(client: TestClient, fake: Fake) -> None:

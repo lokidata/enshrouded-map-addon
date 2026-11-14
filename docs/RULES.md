@@ -20,20 +20,21 @@ A small service that shows an Enshrouded game server's status, lets level `actio
 One static page (`/addon/`, HTML + vanilla JS, no build): server name, state, CPU, memory, disk, uptime; two cards for `action` users (below); the backup list (everyone with access); the journal; for the administrator, the access list with one level selector per site account.
 
 ### Actions card (level `action` and administrator only)
-Buttons Start, Stop, Restart, enabled from the polled state (Start only when `offline`, Stop and Restart only when `running`) and all disabled while a request is in flight. Stop and Restart open a dialog with the checkbox "J'ai prévenu les joueurs"; Confirm stays disabled until it is ticked and then sends `confirm: true`. Start sends no confirmation. Errors show in French, 429 with the wait in seconds.
+Buttons Start, Stop, Restart start disabled, are enabled from the polled state (Start only when `offline`, Stop and Restart only when `running`), are disabled while the state is unknown (failed or missing `/status` read) and all disabled while a request is in flight. Stop and Restart open a dialog with the checkbox "J'ai prévenu les joueurs"; Confirm stays disabled until it is ticked and then sends `confirm: true`. Start sends no confirmation. Errors show in French, 429 with the wait in seconds. After each action the status, the backup list and (when shown) the journal are reloaded.
 
 ### Sauvegardes card
-The backup list (name, size, date, status; `en cours` while `is_successful` is null, `échec` when false) for everyone with access. The "Créer une sauvegarde" button (and its result message) is shown to `action` users only.
+The backup list (name, size, date, status; `en cours` while `completed_at` is null whatever `is_successful` says, `échec` only when `completed_at` is set and `is_successful` is false) for everyone with access; a list load error shows under the button and is cleared by the next successful load. The "Créer une sauvegarde" button (and its result message) is shown to `action` users only; it starts disabled, is enabled once the page has loaded (it depends on the level only) and is disabled while a request is in flight.
 
 ## Power and backup rules
 - Signals: `start`, `stop`, `restart` only (`kill` and anything else: 422 `invalid_request`, never sent). The body is JSON `{"signal": ..., "confirm": ...}`; unparsable JSON, an empty body or an unknown signal is `invalid_request`.
 - `stop` and `restart` need `confirm` to be exactly boolean `true` (the string `"true"` or `false` gives 422 `confirmation_required`); the UI checkbox is not the only guard. `start` needs none.
 - State precondition, read from Pelican just before acting: `start` only when `offline`, `stop` and `restart` only when `running`; any other state (`starting`, `stopping`, unknown) gives 409 `wrong_state` and nothing is sent.
-- Rate limits are global (all users together): one power action per 30 s, one backup creation per 300 s. Over the limit: 429, header `Retry-After` and body `{"detail": "rate_limited", "retry_after": <s>}`. Only a successful Pelican call starts a window; a failed one does not.
-- One lock serialises power and backup creation: a double click or two users at once send one Pelican call, the second sees the new state or window.
+- Rate limits are global (all users together): one power action per 30 s, one backup creation per 300 s. Over the limit: 429, header `Retry-After` and body `{"detail": "rate_limited", "retry_after": <s>}`. A Pelican call that succeeded or may have been applied (2xx, `pelican_unavailable`: timeout, 5xx, redirect; `pelican_timeout`) starts a window; a refused one (`pelican_denied`, `pelican_not_found`, `pelican_rejected`) or a refusal before the call (`wrong_state`, `confirmation_required`, `invalid_request`, `busy`) does not.
+- One lock serialises power and backup creation: a double click or two users at once send one Pelican call, the second sees the new state or window. A request waits at most 5 s for the lock (then 409 `busy`); the locked section (status read and Pelican call) is bounded to 25 s (then 504 `pelican_timeout`, the window starts since the outcome is unknown); the lock is always released.
 - Order of checks: level (403), body validity, confirmation, then under the lock state, rate limit, Pelican call.
-- Pelican refusals: 403 -> 502 `pelican_denied`, 404 -> 502 `pelican_not_found`, 5xx, timeout, redirect or unexpected shape -> 502 `pelican_unavailable`, 400/409/422 -> 409 `pelican_rejected` (e.g. backup limit reached; Pelican's reason goes to the container log only, not to the response). Any 2xx from Pelican counts as success.
-- Success: `POST /power` returns `{"signal", "result": "ok"}`; `POST /backups` returns the created backup (`uuid`, `name`, `bytes`, `created_at`, `completed_at`, `is_successful`, `is_locked`).
+- Pelican refusals: 403 -> 502 `pelican_denied`, 404 -> 502 `pelican_not_found`, 5xx, timeout, redirect or unexpected shape -> 502 `pelican_unavailable`, 400/409/422 on a POST -> 409 `pelican_rejected` (e.g. backup limit reached; Pelican's reason goes to the container log only, not to the response). 400/409/422 on a GET (status, backup list, the status read before a power action) -> 502 `pelican_unavailable`. Any 2xx from Pelican on a POST counts as success.
+- An unexpected error inside `POST /power` or `POST /backups` is journalled `internal_error` and answers 500 `internal_error` (traceback in the container log).
+- Success: `POST /power` returns `{"signal", "result": "ok"}`; `POST /backups` returns the created backup (`uuid`, `name`, `bytes`, `created_at`, `completed_at`, `is_successful`, `is_locked`), or `{"backup": null}` when Pelican answered 2xx with a body that cannot be parsed (logged `bad_response`; still a success: journalled `ok`, window started).
 - Not offered: backup restore, delete, download or lock; `kill`.
 
 ## Access rules
@@ -45,12 +46,12 @@ The backup list (name, size, date, status; `en cours` while `is_successful` is n
 
 ## Journal rules
 - Kept 1 day (`JOURNAL_DAYS`), purged at startup and on each journal write.
-- Pelican failures are written to the container log (stderr), one warning line per distinct reason and minute: `pelican_error kind=<denied|not_found|unreachable|unavailable|bad_response> status=<http> detail='...'`. `detail` is Pelican's own explanation when it gives one (a `denied` caused by the key's IP restriction shows the refused address), cut to 200 characters on one line; never the key or the request headers.
+- Pelican failures are written to the container log (stderr), one warning line per distinct reason and minute: `pelican_error kind=<denied|not_found|rejected|unreachable|unavailable|bad_response> status=<http> detail='...'`. `detail` is Pelican's own explanation when it gives one (a `denied` caused by the key's IP restriction shows the refused address), cut to 200 characters on one line; never the key or the request headers.
 - Stored: time, username, action, target, result, Pelican HTTP status.
   - `access`: target = the account, result = the level, `revoked` or `removed`.
-  - `power`: target = the signal (`start`, `stop`, `restart`), or `invalid` when the body had no usable signal; result = `ok` or the refusal reason: `invalid_request`, `confirmation_required`, `wrong_state`, `rate_limited`, `pelican_denied`, `pelican_not_found`, `pelican_unavailable`, `pelican_rejected`.
+  - `power`: target = the signal (`start`, `stop`, `restart`), or `invalid` when the body had no usable signal; result = `ok` or the refusal reason: `invalid_request`, `confirmation_required`, `wrong_state`, `rate_limited`, `busy`, `timeout` (answered 504 `pelican_timeout`), `pelican_denied`, `pelican_not_found`, `pelican_unavailable`, `pelican_rejected`, `internal_error`.
   - `backup`: target = `create`; result as above (without the signal-related reasons).
-  - The Pelican status column is filled only when Pelican answered with a refusal code (403, 404, 400/409/422, other non-2xx); empty for `ok`, refusals before the call and unreachable panel.
+  - The Pelican status column is filled only for `pelican_denied` (403), `pelican_not_found` (404) and `pelican_rejected` (400/409/422 on a POST); empty for `ok`, refusals before the call and every `pelican_unavailable` (5xx, redirect, timeout, bad shape, 400/409/422 on a GET).
   - Every attempt by an `action` user that reaches the route is journalled, refused or not. A 403 for a `read` or unlisted user (and a missing `X-Addon` header or wrong origin) is not journalled.
   - Status polls (GET `/status`) and backup list reads are not journalled (a poll per viewer would fill it).
 - Never stored: file contents, the Pelican key, cookies.
@@ -63,6 +64,7 @@ The backup list (name, size, date, status; `en cours` while `is_successful` is n
 | Power rate limit | 1 per 30 s, global, in memory |
 | Backup creation rate limit | 1 per 300 s, global, in memory |
 | Timeout (Pelican and site) | `PELICAN_TIMEOUT`, 10 s |
+| Action lock | wait 5 s (`busy`), locked section 25 s (`pelican_timeout`) |
 | Journal retention | 1 day |
 | Workers | 1 (one shared SQLite connection) |
 | Pelican URL | https only unless `ALLOW_HTTP=true`; trailing `/` stripped |
@@ -74,12 +76,12 @@ The backup list (name, size, date, status; `en cours` while `is_successful` is n
 | GET `/status` | read+ | server status; 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable` |
 | POST `/power` | action | body `{"signal": "start"\|"stop"\|"restart", "confirm": true}` (`confirm` required for stop and restart); `{"signal", "result": "ok"}` |
 | GET `/backups` | read+ | list of backups (`uuid`, `name`, `bytes`, `created_at`, `completed_at`, `is_successful`, `is_locked`); 502 as `/status` |
-| POST `/backups` | action | body `{}`; the created backup; 409 `pelican_rejected` when Pelican refuses (e.g. limit) |
+| POST `/backups` | action | body `{}`; the created backup or `{"backup": null}`; 409 `pelican_rejected` when Pelican refuses (e.g. limit) |
 | GET `/journal` | read+ | the 500 newest journal rows, newest first |
 | GET `/access` | admin | site accounts with their level |
 | PUT `/access/{user_key}` | admin | body `{"level": "read"\|"action"\|null}`; null revokes |
 
-Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unknown_user`; on the action routes also 422 `invalid_request` / `confirmation_required`, 409 `wrong_state` / `pelican_rejected`, 429 `rate_limited` (with `Retry-After`), 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable`.
+Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unknown_user`; on the action routes also 422 `invalid_request` / `confirmation_required`, 409 `wrong_state` / `pelican_rejected` / `busy`, 429 `rate_limited` (with `Retry-After`), 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable`, 504 `pelican_timeout`, 500 `internal_error`.
 
 ## Environment
 | Variable | Default | Meaning |
