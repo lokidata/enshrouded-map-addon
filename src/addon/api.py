@@ -216,7 +216,7 @@ async def journalled(
             )
         raise HTTPException(r.code, r.reason) from r
     except Exception:  # a bug must not hide an attempt that may have reached Pelican
-        log.exception("internal_error action=%s target=%s", action, target)
+        log.exception("internal_error action=%s", action)  # target is journalled, not logged
         store.log(who.username, action, target, "internal_error")
         return JSONResponse({"detail": "internal_error"}, status_code=500)
     store.log(who.username, action, target, "ok")
