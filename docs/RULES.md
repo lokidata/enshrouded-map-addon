@@ -95,13 +95,13 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 | `PELICAN_TIMEOUT` | 10 | seconds |
 | `ALLOW_HTTP` | false | accept an `http://` panel URL |
 | `ALLOWED_ORIGIN` | unset | exact `Origin` required on writes; must look like `https://host[:port]` (scheme, no path; a trailing `/` is stripped; anything else stops the start). A refused write logs `write_refused reason=missing_header\|origin_mismatch` (never the received value) |
-| `BACKUP_IGNORED` | unset | Pelican ignore list for backups (gitignore style, one pattern per line; `\n` accepted in a one-line variable). Example keeping only the save: `/*\n!/savegame/\n!/savegame/**`. Empty = Pelican's default (everything). Sent as `ignored`: field name unverified against a real panel |
+| `BACKUP_IGNORED` | unset | Pelican ignore list for backups (gitignore style, one pattern per line; `\n` accepted in a one-line variable). Example keeping only the save: `/*\n!/savegame/\n!/savegame/**`. Empty = Pelican's default (everything). Sent as `ignored` (confirmed by the panel's own OpenAPI export: newline separated list, `.gitignore` format) |
 
 ## Known gaps
 - Refused writes (missing header, wrong origin, 403) are not journalled.
 - No JSON line on stdout for access changes yet (the audit table only).
 - Without `ALLOWED_ORIGIN`, only the `X-Addon` header protects writes: set it.
-- Pelican response shapes (status, resources, and now power and backup creation/list) are written from the docs and unverified against a real panel; parsing is defensive and an unexpected shape is `pelican_unavailable`.
+- Pelican response shapes: power (204), backup creation (200, `attributes` with `uuid`, `is_successful`, `is_locked`, `name`, `bytes`, `created_at`, `completed_at`) and the `ignored` field were checked against the panel's OpenAPI export of 2026-11-14 (client API), and the status and backup list worked on the real panel; power and backup creation on the real server are still to be tried by the maintainer. Parsing stays defensive and an unexpected shape is `PelicanUnavailable`. The backup list is paginated by Pelican (`meta.pagination`); only the first page is read (no page parameter is documented), so a server with many backups may not show the newest ones.
 - Any 2xx from Pelican on power or backup creation counts as success; the real server state is only seen at the next poll.
 - Refused writes of delivery 1 (missing header, wrong origin, 403) are still not journalled.
 - Rate limits and the lock are in memory: they reset on restart and assume one worker.
