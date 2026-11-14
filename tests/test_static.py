@@ -65,3 +65,9 @@ def test_ui_review_rules(client: TestClient) -> None:
     assert "b.completed_at === null" in js  # 'en cours' until completed_at is set
     assert "loadJournal()" in js.split("async function act")[1].split("const power")[0]
     assert 'id="b-err"' in client.get("/addon/").text  # list errors cleared on success
+
+
+def test_unfiltered_backup_warning_is_in_the_page(client: TestClient) -> None:
+    js = client.get("/addon/app.js").text
+    assert "confirm_full" in js and "backup_filtered" in js
+    assert "tous les fichiers" in client.get("/addon/app.js").text + client.get("/addon/").text

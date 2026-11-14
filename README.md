@@ -21,8 +21,16 @@ Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack i
 
 ## Security notes
 - Pelican failures are logged with their reason (and the refused IP address when Pelican says it); the key is read from the environment only, never logged or returned; the browser never calls Pelican.
-- Set `ALLOWED_ORIGIN` to the site's origin (trailing `/` is stripped): otherwise only the `X-Addon` header protects writes.
+- Set `ALLOWED_ORIGIN` to the site's origin with its scheme, e.g. `https://carte.example.lan` (no path; a missing scheme stops the start): otherwise only the `X-Addon` header protects writes.
 - Read-only rootfs, non-root, no capabilities; the only writable place is `/data`.
 - Report vulnerabilities: `SECURITY.md`.
 
 MIT licence, see `LICENSE`.
+
+## Backups of the save only
+
+By default Pelican backs up every file of the server. Set `BACKUP_IGNORED` (gitignore style; `\n` separates patterns in a one-line variable) to keep only the save folder:
+
+```
+BACKUP_IGNORED=/*\n!/savegame/\n!/savegame/**
+```

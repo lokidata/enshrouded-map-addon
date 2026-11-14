@@ -71,9 +71,12 @@ def check_write(request: Request) -> None:
     if request.method == "GET":
         return
     allowed = request.app.state.settings.allowed_origin
-    if request.headers.get("x-addon") != "1" or (
-        allowed and request.headers.get("origin") != allowed
-    ):
+    if request.headers.get("x-addon") != "1":
+        log.warning("write_refused reason=missing_header")
+        raise HTTPException(403, "forbidden")
+    if allowed and request.headers.get("origin") != allowed:
+        # the received value is not logged (it is attacker-controlled); check ALLOWED_ORIGIN
+        log.warning("write_refused reason=origin_mismatch")
         raise HTTPException(403, "forbidden")
 
 
@@ -141,7 +144,12 @@ async def site_users(request: Request) -> dict[str, str]:
 
 @router.get("/me")
 def me(request: Request, who: Current) -> dict[str, Any]:
-    return {"username": who.username, "is_admin": who.is_admin, "level": level_of(request, who)}
+    return {
+        "username": who.username,
+        "is_admin": who.is_admin,
+        "level": level_of(request, who),
+        "backup_filtered": bool(request.app.state.settings.backup_ignored),
+    }
 
 
 @router.get("/status")
@@ -301,7 +309,15 @@ async def list_backups(request: Request, who: Reader) -> list[dict[str, Any]]:
 
 @router.post("/backups", response_model=None)
 async def create_backup(request: Request, who: Actor) -> dict[str, Any] | JSONResponse:
+    raw: Any = None
+    with suppress(ValueError):  # no or bad body: only matters when the backup is unfiltered
+        raw = json.loads(await request.body())
+    confirmed = isinstance(raw, dict) and raw.get("confirm_full") is True
+
     async def run() -> dict[str, Any]:
+        # no BACKUP_IGNORED: Pelican would archive every file of the server (tens of GB)
+        if not request.app.state.settings.backup_ignored and not confirmed:
+            raise Refused(422, "full_backup_confirmation_required")
         backup = await locked(
             request,
             "backup",

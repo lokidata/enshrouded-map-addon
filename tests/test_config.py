@@ -52,3 +52,23 @@ def test_allowed_origin_trailing_slash_stripped() -> None:
     assert make(allowed_origin="https://site.example.test/").allowed_origin == (
         "https://site.example.test"
     )
+
+
+@pytest.mark.parametrize(
+    "bad", ["site.example.test", "https://site.example.test/app", "ftp://x.test"]
+)
+def test_allowed_origin_must_be_scheme_host(bad: str) -> None:
+    with pytest.raises(ValidationError, match="ALLOWED_ORIGIN"):
+        make(allowed_origin=bad)
+
+
+@pytest.mark.parametrize("good", ["https://site.example.test", "http://localhost:4200"])
+def test_allowed_origin_scheme_host_port_ok(good: str) -> None:
+    assert make(allowed_origin=good).allowed_origin == good
+
+
+def test_backup_ignored_escaped_newlines_become_newlines() -> None:
+    assert make().backup_ignored == ""
+    assert make(backup_ignored=r"/*\n!/savegame/\n!/savegame/**").backup_ignored == (
+        "/*\n!/savegame/\n!/savegame/**"
+    )

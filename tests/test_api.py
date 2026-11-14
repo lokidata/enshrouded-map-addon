@@ -104,6 +104,7 @@ def client(fake: Fake, tmp_path: Path) -> Iterator[TestClient]:
         site_url="http://site.example.test",
         db_path=str(tmp_path / "addon.db"),
         allowed_origin="https://site.example.test",
+        backup_ignored="/*\n!/savegame/\n!/savegame/**",
     )
     app = create_app(settings, httpx.MockTransport(fake.handle))
     with TestClient(app) as c:
@@ -132,7 +133,12 @@ def test_logged_out_cookie_is_401(client: TestClient) -> None:
 
 def test_unknown_user_has_no_level_and_no_status(client: TestClient, fake: Fake) -> None:
     me = client.get("/addon/api/me", headers=as_("alice"))
-    assert me.json() == {"username": "alice", "is_admin": False, "level": None}
+    assert me.json() == {
+        "username": "alice",
+        "is_admin": False,
+        "level": None,
+        "backup_filtered": True,
+    }
     assert client.get("/addon/api/status", headers=as_("alice")).status_code == 403
     assert client.get("/addon/api/journal", headers=as_("alice")).status_code == 403
     assert fake.pelican_calls == 0
@@ -167,7 +173,7 @@ def test_read_user_journal_has_only_public_fields(client: TestClient) -> None:
 
 def test_admin_has_action_and_everything(client: TestClient) -> None:
     me = client.get("/addon/api/me", headers=as_("admin")).json()
-    assert me == {"username": "root", "is_admin": True, "level": "action"}
+    assert me == {"username": "root", "is_admin": True, "level": "action", "backup_filtered": True}
     for path in ("/status", "/journal", "/access"):
         assert client.get(f"/addon/api{path}", headers=as_("admin")).status_code == 200
 
@@ -624,3 +630,59 @@ def test_key_never_in_action_responses_or_logs(
     bodies.append(client.get("/addon/api/journal", headers=as_("admin")).text)
     assert all(KEY not in b for b in bodies)
     assert all(KEY not in r.getMessage() and KEY not in str(r.args) for r in caplog.records)
+
+
+def test_refused_write_is_logged_without_the_received_origin(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    headers = as_("admin", {"X-Addon": "1", "Origin": "https://evil.example.test\nforged"})
+    with caplog.at_level("WARNING", logger="addon.api"):
+        assert client.post("/addon/api/backups", headers=headers).status_code == 403
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "origin_mismatch" in text and "evil.example.test" not in text
+
+
+@pytest.fixture
+def client_full(fake: Fake, tmp_path: Path) -> Iterator[TestClient]:
+    """Same app, no BACKUP_IGNORED: a backup would contain every file of the server."""
+    settings = Settings(
+        pelican_url="https://panel.example.test",
+        pelican_api_key=KEY,  # type: ignore[arg-type]
+        pelican_server_id="abcd1234",
+        site_url="http://site.example.test",
+        db_path=str(tmp_path / "addon.db"),
+        allowed_origin="https://site.example.test",
+    )
+    with TestClient(create_app(settings, httpx.MockTransport(fake.handle))) as c:
+        yield c
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"confirm_full": False}, {"confirm_full": "true"}, {"confirm_full": 1}]
+)
+def test_unfiltered_backup_needs_confirm_full(
+    client_full: TestClient, fake: Fake, extra: dict[str, Any]
+) -> None:
+    resp = post(client_full, "/backups", json=extra)
+    assert (resp.status_code, resp.json()) == (422, {"detail": "full_backup_confirmation_required"})
+    assert fake.backups_created == 0
+    assert actions(client_full) == [
+        ("root", "backup", "create", "full_backup_confirmation_required", None)
+    ]
+
+
+def test_unfiltered_backup_with_confirm_full_true_goes_through(
+    client_full: TestClient, fake: Fake
+) -> None:
+    assert post(client_full, "/backups", json={"confirm_full": True}).status_code == 200
+    assert fake.backups_created == 1
+
+
+def test_filtered_backup_needs_no_confirmation(client: TestClient, fake: Fake) -> None:
+    assert post(client, "/backups").status_code == 200
+    assert fake.backups_created == 1
+
+
+def test_me_tells_whether_backups_are_filtered(client: TestClient, client_full: TestClient) -> None:
+    assert client.get("/addon/api/me", headers=as_("admin")).json()["backup_filtered"] is True
+    assert client_full.get("/addon/api/me", headers=as_("admin")).json()["backup_filtered"] is False
