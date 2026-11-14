@@ -52,5 +52,5 @@ async def who_am_i(
     if data.get("id") is None or not data.get("created_at"):
         raise SiteUnavailable
     return Identity(
-        f"{data['id']}:{data['created_at']}", str(data["username"]), bool(data.get("is_admin"))
+        f"{data['id']}:{data['created_at']}", str(data["username"]), data.get("is_admin") is True
     )

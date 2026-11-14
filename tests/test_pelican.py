@@ -127,3 +127,24 @@ def test_bad_info_shape_is_unavailable() -> None:
 
     with pytest.raises(PelicanUnavailable):
         call(handler)
+
+
+@pytest.mark.parametrize(
+    "stats_body",
+    [
+        '{"attributes":{"current_state":"running","resources":{"cpu_absolute":NaN,"memory_bytes":1,"disk_bytes":1,"uptime":1}}}',
+        '{"attributes":{"current_state":"running","resources":{"cpu_absolute":1,"memory_bytes":Infinity,"disk_bytes":1,"uptime":1}}}',
+        '{"attributes":{"current_state":"running","resources":{"cpu_absolute":1,"memory_bytes":1,"disk_bytes":-Infinity,"uptime":1}}}',
+        '{"attributes":{"current_state":"running","resources":{"cpu_absolute":1,"memory_bytes":1,"disk_bytes":1,"uptime":"3"}}}',
+        '{"attributes":{"current_state":"running","resources":{"cpu_absolute":1,"memory_bytes":-1,"disk_bytes":1,"uptime":1}}}',
+        '{"attributes":{"current_state":"running","resources":{"cpu_absolute":-0.5,"memory_bytes":1,"disk_bytes":1,"uptime":1}}}',
+    ],
+)
+def test_non_finite_or_bad_numbers_are_unavailable(stats_body: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/resources"):
+            return httpx.Response(200, content=stats_body)
+        return httpx.Response(200, json=INFO)
+
+    with pytest.raises(PelicanUnavailable):
+        call(handler)

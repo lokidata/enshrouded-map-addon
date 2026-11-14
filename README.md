@@ -1,6 +1,6 @@
 # enshrouded-map-addon
 
-Game-server add-on for the private [Enshrouded interactive map](https://github.com/lokidata/enshrouded-map) site: shows the server status through a restricted Pelican key, with a per-user access list and a 1-day audit journal (FastAPI, Python 3.13). Functional rules: `docs/RULES.md`.
+Game-server add-on for the private [Enshrouded interactive map](https://github.com/lokidata/enshrouded-map) site: shows the server status through a restricted Pelican key, with a per-user access list and a 1-day audit journal (access changes only, 500 newest rows shown; status polls are not journalled) (FastAPI, Python 3.13). Functional rules: `docs/RULES.md`.
 
 ## How it plugs into the site
 Run it as its own container and set `ADDON_URL` (origin only, e.g. `http://addon:8000`) on the site's web container. The site's nginx then proxies `/addon/` to it. For each request the add-on relays the caller's cookie to the site's `/api/v1/auth/me` (and `/api/v1/auth/users` for the administrator's access screen), so it needs the companion site change (`id`, `created_at` and `addon` in `/auth/me`). Without it the add-on refuses everyone. See `deploy/`.
@@ -21,7 +21,7 @@ Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack i
 
 ## Security notes
 - The key is read from the environment only, never logged or returned; the browser never calls Pelican.
-- Set `ALLOWED_ORIGIN` to the site's origin: otherwise only the `X-Addon` header protects writes.
+- Set `ALLOWED_ORIGIN` to the site's origin (trailing `/` is stripped): otherwise only the `X-Addon` header protects writes.
 - Read-only rootfs, non-root, no capabilities; the only writable place is `/data`.
 - Report vulnerabilities: `SECURITY.md`.
 

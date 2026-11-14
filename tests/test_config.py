@@ -46,3 +46,9 @@ def test_http_refused_unless_allowed() -> None:
     assert make(pelican_url="http://panel.example.test/", allow_http=True).pelican_url == (
         "http://panel.example.test"
     )
+
+
+def test_allowed_origin_trailing_slash_stripped() -> None:
+    assert make(allowed_origin="https://site.example.test/").allowed_origin == (
+        "https://site.example.test"
+    )

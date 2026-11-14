@@ -61,3 +61,9 @@ def test_journal_newest_first_and_no_secret_columns(store: Store, tmp_path: Path
     with sqlite3.connect(str(tmp_path / "a.db")) as c:
         cols = {r[1] for r in c.execute("PRAGMA table_info(audit)")}
     assert cols == {"id", "at", "username", "action", "target", "result", "pelican_status"}
+
+
+def test_journal_limit(store: Store) -> None:
+    for i in range(5):
+        store.log(f"u{i}", "x", "t", "ok")
+    assert [r.username for r in store.journal(limit=2)] == ["u4", "u3"]

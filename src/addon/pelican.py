@@ -1,5 +1,6 @@
 """Pelican panel client, status only (two GETs, no redirects, URL from config)."""
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +34,9 @@ class ServerStatus:
 def _num(value: Any) -> float:
     # bool is an int subclass: reject it as well
     if isinstance(value, bool) or not isinstance(value, int | float):
+        raise PelicanUnavailable("unexpected response shape")
+    # json.loads accepts NaN/Infinity; int(inf) would raise outside our error handling
+    if not math.isfinite(value) or value < 0:
         raise PelicanUnavailable("unexpected response shape")
     return float(value)
 

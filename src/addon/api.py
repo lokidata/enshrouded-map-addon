@@ -103,14 +103,12 @@ def me(request: Request, who: Current) -> dict[str, Any]:
 
 @router.get("/status")
 async def status(request: Request, who: Reader) -> dict[str, Any]:
-    store: Store = request.app.state.store
+    # not journalled: a 15 s poll per viewer would fill the journal (journal write actions later)
     try:
         result = await request.app.state.pelican.status()
     except (PelicanDenied, PelicanNotFound, PelicanUnavailable) as exc:
-        detail, code = PELICAN_ERRORS[type(exc)]
-        store.log(who.username, "status", "server", detail, code)
+        detail, _ = PELICAN_ERRORS[type(exc)]
         raise HTTPException(502, detail) from exc
-    store.log(who.username, "status", "server", "ok", 200)
     return asdict(result)
 
 

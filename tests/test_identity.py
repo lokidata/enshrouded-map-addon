@@ -75,3 +75,9 @@ def test_site_failures_are_unavailable() -> None:
     for handler in bad:
         with pytest.raises(SiteUnavailable):
             call(handler)
+
+
+def test_is_admin_only_for_json_true() -> None:
+    for value in ("false", "yes", 1, [1], {"a": 1}):
+        assert not call(json_handler({**ME, "is_admin": value})).is_admin
+    assert call(json_handler({**ME, "is_admin": True})).is_admin

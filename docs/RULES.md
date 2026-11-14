@@ -28,7 +28,7 @@ One static page (`/addon/`, HTML + vanilla JS, no build): server name, state, CP
 
 ## Journal rules
 - Kept 1 day (`JOURNAL_DAYS`), purged at startup and on each journal write.
-- Stored: time, username, action (`status`, `access`), target, result, Pelican HTTP status.
+- Stored: time, username, action (`access`), target, result, Pelican HTTP status. Status polls (GET `/status`) are not journalled (a poll per viewer would fill it); future Pelican write actions will be.
 - Never stored: file contents, the Pelican key, cookies.
 - Non-administrators get only `at, username, action, target, result`.
 
@@ -46,7 +46,7 @@ One static page (`/addon/`, HTML + vanilla JS, no build): server name, state, CP
 | --- | --- | --- |
 | GET `/me` | any logged-in | `username`, `is_admin`, `level` (null = none) |
 | GET `/status` | read+ | server status; 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable` |
-| GET `/journal` | read+ | journal rows, newest first |
+| GET `/journal` | read+ | the 500 newest journal rows, newest first |
 | GET `/access` | admin | site accounts with their level |
 | PUT `/access/{user_key}` | admin | body `{"level": "read"\|"action"\|null}`; null revokes |
 
@@ -63,7 +63,7 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 | `JOURNAL_DAYS` | 1 | journal retention |
 | `PELICAN_TIMEOUT` | 10 | seconds |
 | `ALLOW_HTTP` | false | accept an `http://` panel URL |
-| `ALLOWED_ORIGIN` | unset | exact `Origin` required on writes |
+| `ALLOWED_ORIGIN` | unset | exact `Origin` required on writes (trailing `/` stripped) |
 
 ## Known gaps
 - Refused writes (missing header, wrong origin, 403) are not journalled.

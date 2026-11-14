@@ -91,11 +91,12 @@ class Store:
             )
         self.purge(now, self._days)
 
-    def journal(self) -> list[JournalRow]:
+    def journal(self, limit: int = 500) -> list[JournalRow]:
         with self._lock:
             rows = self._db.execute(
                 "SELECT id, at, username, action, target, result, pelican_status"
-                " FROM audit ORDER BY id DESC"
+                " FROM audit ORDER BY id DESC LIMIT ?",
+                (limit,),
             ).fetchall()
         return [JournalRow(*r) for r in rows]
 

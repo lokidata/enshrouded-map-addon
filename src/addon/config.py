@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _normalise_url(self) -> Self:
         self.pelican_url = self.pelican_url.rstrip("/")
+        if self.allowed_origin:
+            self.allowed_origin = self.allowed_origin.rstrip("/")
         if not self.allow_http and not self.pelican_url.startswith("https://"):
             raise ValueError("PELICAN_URL must use https (set ALLOW_HTTP=true to override)")
         return self

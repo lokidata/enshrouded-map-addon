@@ -125,7 +125,7 @@ def test_read_user_sees_status_but_cannot_manage(client: TestClient) -> None:
 
 def test_read_user_journal_has_only_public_fields(client: TestClient) -> None:
     grant(client, ALICE_KEY, "read")
-    client.get("/addon/api/status", headers=as_("alice"))
+    grant(client, BOB_KEY, "read")
     rows = client.get("/addon/api/journal", headers=as_("alice")).json()
     assert rows and all(set(r) == {"at", "username", "action", "target", "result"} for r in rows)
 
@@ -191,18 +191,32 @@ def test_pelican_errors_are_502(client: TestClient, fake: Fake, status: int, det
     resp = client.get("/addon/api/status", headers=as_("admin"))
     assert resp.status_code == 502
     assert resp.json() == {"detail": detail}
-    row = client.get("/addon/api/journal", headers=as_("admin")).json()[0]
-    assert (row["action"], row["result"]) == ("status", detail)
+    assert client.get("/addon/api/journal", headers=as_("admin")).json() == []
 
 
-def test_pelican_call_and_access_change_are_journalled(client: TestClient) -> None:
+def test_status_polls_are_not_journalled_but_access_changes_are(client: TestClient) -> None:
     grant(client, ALICE_KEY, "read")
     client.get("/addon/api/status", headers=as_("admin"))
     rows = client.get("/addon/api/journal", headers=as_("admin")).json()
     assert [(r["username"], r["action"], r["target"], r["result"]) for r in rows] == [
-        ("root", "status", "server", "ok"),
         ("root", "access", "alice", "read"),
     ]
+
+
+def test_journal_returns_at_most_500_newest(client: TestClient) -> None:
+    store = client.app.state.store  # type: ignore[attr-defined]
+    for i in range(505):
+        store.log("root", "access", f"u{i}", "read")
+    rows = client.get("/addon/api/journal", headers=as_("admin")).json()
+    assert len(rows) == 500
+    assert rows[0]["target"] == "u504"
+
+
+def test_other_admin_missing_from_site_list_is_404(client: TestClient, fake: Fake) -> None:
+    fake.sessions["admin2"] = {**ADMIN, "id": 2, "username": "root2"}
+    key = "2:2026-01-01T00:00:00"
+    assert grant(client, key, "read").status_code == 404
+    assert client.get("/addon/api/me", headers=as_("admin2")).json()["level"] == "action"
 
 
 def test_access_prunes_users_missing_from_site_and_journals(client: TestClient, fake: Fake) -> None:
