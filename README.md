@@ -20,7 +20,7 @@ make lock    # regenerate requirements.lock after a dependency change
 Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack in `deploy/`.
 
 ## Security notes
-- The key is read from the environment only, never logged or returned; the browser never calls Pelican.
+- Pelican failures are logged with their reason (and the refused IP address when Pelican says it); the key is read from the environment only, never logged or returned; the browser never calls Pelican.
 - Set `ALLOWED_ORIGIN` to the site's origin (trailing `/` is stripped): otherwise only the `X-Addon` header protects writes.
 - Read-only rootfs, non-root, no capabilities; the only writable place is `/data`.
 - Report vulnerabilities: `SECURITY.md`.
