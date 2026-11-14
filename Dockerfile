@@ -19,5 +19,7 @@ COPY src ./src
 USER app
 VOLUME /data
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/addon/', timeout=3)"]
 # Single worker: the SQLite store holds one shared connection.
 CMD ["uvicorn", "addon.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

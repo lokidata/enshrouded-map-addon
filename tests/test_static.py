@@ -29,7 +29,7 @@ def test_page_is_french_with_strict_csp(client: TestClient) -> None:
     assert resp.status_code == 200
     assert 'lang="fr"' in resp.text
     assert "default-src 'self'" in resp.headers["content-security-policy"]
-    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>|<style|\sstyle=|\son\w+=", resp.text)
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>|<style|\sstyle=|\son\w+=", resp.text, re.I)
 
 
 def test_no_external_url_and_no_innerhtml(client: TestClient) -> None:
