@@ -6,9 +6,11 @@ import pytest
 
 from addon.config import Settings
 from addon.pelican import (
+    Backup,
     PelicanClient,
     PelicanDenied,
     PelicanNotFound,
+    PelicanRejected,
     PelicanUnavailable,
     ServerStatus,
 )
@@ -217,3 +219,130 @@ def test_bad_resources_shape_is_logged(caplog: pytest.LogCaptureFixture) -> None
     with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(PelicanUnavailable):
         call(handler)
     assert "bad_response" in caplog.records[0].getMessage()
+
+
+BACKUP = {
+    "uuid": "u1",
+    "name": "b1",
+    "bytes": 10,
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "completed_at": "2026-01-01T00:01:00+00:00",
+    "is_successful": True,
+    "is_locked": False,
+}
+PENDING = {**BACKUP, "uuid": "u2", "completed_at": None, "is_successful": None}
+
+
+def run_client(handler: Any, method: str, *args: Any) -> Any:
+    async def run() -> Any:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await getattr(PelicanClient(SETTINGS, client), method)(*args)
+
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize("code", [200, 204])
+def test_power_sends_exact_request(code: int) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(code)
+
+    assert run_client(handler, "power", "restart") is None
+    (r,) = seen
+    assert (r.method, str(r.url)) == (
+        "POST",
+        "https://panel.example.test/api/client/servers/abcd1234/power",
+    )
+    assert r.content == b'{"signal":"restart"}'
+    assert r.headers["Authorization"] == "Bearer pacc_TEST"
+
+
+@pytest.mark.parametrize(
+    ("status", "exc"),
+    [
+        (403, PelicanDenied),
+        (404, PelicanNotFound),
+        (400, PelicanRejected),
+        (409, PelicanRejected),
+        (422, PelicanRejected),
+        (500, PelicanUnavailable),
+        (302, PelicanUnavailable),
+    ],
+)
+@pytest.mark.parametrize("method", ["power", "create_backup", "list_backups"])
+def test_write_error_statuses(status: int, exc: type[Exception], method: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, headers={"Location": "https://evil.example.test/"})
+
+    args = ("stop",) if method == "power" else ()
+    with pytest.raises(exc) as info:
+        run_client(handler, method, *args)
+    assert "pacc_TEST" not in str(info.value) + repr(info.value)
+
+
+def test_rejection_reason_goes_to_the_log_only(caplog: pytest.LogCaptureFixture) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"errors": [{"detail": "Backup limit reached"}]})
+
+    with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(PelicanRejected) as info:
+        run_client(handler, "create_backup")
+    assert "rejected" in caplog.text and "Backup limit reached" in caplog.text
+    assert "Backup limit" not in str(info.value) and "pacc_TEST" not in caplog.text
+
+
+def test_power_timeout_is_unavailable_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("boom", request=request)
+
+    with caplog.at_level("WARNING", logger="addon.pelican"), pytest.raises(PelicanUnavailable):
+        run_client(handler, "power", "start")
+    assert "ConnectTimeout" in caplog.text and "pacc_TEST" not in caplog.text
+
+
+def test_list_backups_parses_two() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert (request.method, request.url.path.endswith("/backups")) == ("GET", True)
+        return httpx.Response(200, json={"data": [{"attributes": BACKUP}, {"attributes": PENDING}]})
+
+    first, second = run_client(handler, "list_backups")
+    assert first == Backup(
+        "u1", "b1", 10, "2026-01-01T00:00:00+00:00", "2026-01-01T00:01:00+00:00", True, False
+    )
+    assert (second.completed_at, second.is_successful) == (None, None)
+
+
+def test_create_backup_posts_empty_body_and_parses() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"attributes": PENDING})
+
+    assert run_client(handler, "create_backup").uuid == "u2"
+    assert (seen[0].method, seen[0].content) == ("POST", b"{}")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {},
+        {"data": {}},
+        {"data": [{}]},
+        {"data": [{"attributes": {**BACKUP, "bytes": "x"}}]},
+        {"data": [{"attributes": {**BACKUP, "is_locked": "no"}}]},
+        {"data": [{"attributes": {**BACKUP, "name": 5}}]},
+        {"data": [{"attributes": {**BACKUP, "completed_at": 5}}]},
+        {"data": [{"attributes": {**BACKUP, "is_successful": "yes"}}]},
+    ],
+)
+def test_list_backups_bad_shapes_are_unavailable(body: Any) -> None:
+    with pytest.raises(PelicanUnavailable):
+        run_client(lambda request: httpx.Response(200, json=body), "list_backups")
+
+
+def test_create_backup_bad_shape_is_unavailable() -> None:
+    with pytest.raises(PelicanUnavailable):
+        run_client(lambda request: httpx.Response(200, json={"attributes": {}}), "create_backup")

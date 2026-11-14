@@ -1,10 +1,10 @@
-"""Pelican panel client, status only (two GETs, no redirects, URL from config)."""
+"""Pelican panel client: status, power and backups (no redirects, URL from config)."""
 
 import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -26,6 +26,10 @@ class PelicanUnavailable(Exception):
     pass
 
 
+class PelicanRejected(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class ServerStatus:
     name: str
@@ -34,6 +38,17 @@ class ServerStatus:
     memory_bytes: int
     disk_bytes: int
     uptime_ms: int
+
+
+@dataclass(frozen=True)
+class Backup:
+    uuid: str
+    name: str
+    bytes: int
+    created_at: str
+    completed_at: str | None
+    is_successful: bool | None
+    is_locked: bool
 
 
 def _num(value: Any) -> float:
@@ -74,11 +89,15 @@ class PelicanClient:
             self._last_log[reason] = now
             log.warning("pelican_error kind=%s status=%s detail=%r", kind, status, detail)
 
-    async def _get(self, suffix: str) -> dict[str, Any]:
+    async def _request(
+        self, method: str, suffix: str, body: dict[str, Any] | None = None
+    ) -> httpx.Response:
         try:
-            resp = await self._client.get(
+            resp = await self._client.request(
+                method,
                 self._base + suffix,
                 headers=self._headers,
+                json=body,
                 timeout=self._timeout,
                 follow_redirects=False,
             )
@@ -86,26 +105,73 @@ class PelicanClient:
             # httpx messages never carry request headers; the key stays out of ours too
             self._fail("unreachable", None, type(exc).__name__)
             raise PelicanUnavailable("pelican unreachable") from exc
-        if resp.status_code in (403, 404):
-            self._fail(
-                "denied" if resp.status_code == 403 else "not_found",
-                resp.status_code,
-                _panel_detail(resp),
-            )
-            raise PelicanDenied if resp.status_code == 403 else PelicanNotFound
-        if resp.status_code != 200:
-            self._fail("unavailable", resp.status_code, "")
-            raise PelicanUnavailable(f"pelican answered {resp.status_code}")
+        code = resp.status_code
+        if code in (200, 204):
+            return resp
+        kinds = {403: "denied", 404: "not_found", 400: "rejected", 409: "rejected", 422: "rejected"}
+        if code not in kinds:
+            self._fail("unavailable", code, "")
+            raise PelicanUnavailable(f"pelican answered {code}")
+        self._fail(kinds[code], code, _panel_detail(resp))
+        raise {403: PelicanDenied, 404: PelicanNotFound}.get(code, PelicanRejected)
+
+    async def _json(self, method: str, suffix: str, body: dict[str, Any] | None = None) -> Any:
+        resp = await self._request(method, suffix, body)
         try:
-            data = resp.json()
+            return resp.json()
         except ValueError as exc:
-            self._fail("bad_response", 200, "invalid JSON")
+            self._fail("bad_response", resp.status_code, "invalid JSON")
             raise PelicanUnavailable("pelican sent invalid JSON") from exc
+
+    def _bad(self) -> PelicanUnavailable:
+        self._fail("bad_response", 200, "unexpected response shape")
+        return PelicanUnavailable("unexpected response shape")
+
+    async def _get(self, suffix: str) -> dict[str, Any]:
+        data = await self._json("GET", suffix)
         attrs = data.get("attributes") if isinstance(data, dict) else None
         if not isinstance(attrs, dict):
-            self._fail("bad_response", 200, "unexpected response shape")
-            raise PelicanUnavailable("unexpected response shape")
+            raise self._bad()
         return attrs
+
+    async def power(self, signal: Literal["start", "stop", "restart"]) -> None:
+        await self._request("POST", "/power", {"signal": signal})
+
+    async def list_backups(self) -> list[Backup]:
+        data = await self._json("GET", "/backups")
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise self._bad()
+        return [
+            self._backup(row.get("attributes") if isinstance(row, dict) else None) for row in rows
+        ]
+
+    async def create_backup(self) -> Backup:
+        data = await self._json("POST", "/backups", {})
+        return self._backup(data.get("attributes") if isinstance(data, dict) else None)
+
+    def _backup(self, a: Any) -> Backup:
+        def opt(key: str, kind: type) -> Any:
+            v = a.get(key)
+            if v is not None and not isinstance(v, kind):
+                raise self._bad()
+            return v
+
+        if not isinstance(a, dict):
+            raise self._bad()
+        uuid, name, created = a.get("uuid"), a.get("name"), a.get("created_at")
+        locked = a.get("is_locked")
+        if not (isinstance(uuid, str) and isinstance(name, str) and isinstance(created, str)):
+            raise self._bad()
+        if not isinstance(locked, bool):
+            raise self._bad()
+        try:
+            size = int(_num(a.get("bytes")))
+        except PelicanUnavailable:
+            raise self._bad() from None
+        return Backup(
+            uuid, name, size, created, opt("completed_at", str), opt("is_successful", bool), locked
+        )
 
     async def status(self) -> ServerStatus:
         info = await self._get("")
