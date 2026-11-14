@@ -94,7 +94,8 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 | `JOURNAL_DAYS` | 1 | journal retention |
 | `PELICAN_TIMEOUT` | 10 | seconds |
 | `ALLOW_HTTP` | false | accept an `http://` panel URL |
-| `ALLOWED_ORIGIN` | unset | exact `Origin` required on writes (trailing `/` stripped) |
+| `ALLOWED_ORIGIN` | unset | exact `Origin` required on writes; must look like `https://host[:port]` (scheme, no path; a trailing `/` is stripped; anything else stops the start). A refused write logs `write_refused reason=missing_header\|origin_mismatch` (never the received value) |
+| `BACKUP_IGNORED` | unset | Pelican ignore list for backups (gitignore style, one pattern per line; `\n` accepted in a one-line variable). Example keeping only the save: `/*\n!/savegame/\n!/savegame/**`. Empty = Pelican's default (everything). Sent as `ignored`: field name unverified against a real panel |
 
 ## Known gaps
 - Refused writes (missing header, wrong origin, 403) are not journalled.

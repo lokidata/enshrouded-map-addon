@@ -71,9 +71,12 @@ def check_write(request: Request) -> None:
     if request.method == "GET":
         return
     allowed = request.app.state.settings.allowed_origin
-    if request.headers.get("x-addon") != "1" or (
-        allowed and request.headers.get("origin") != allowed
-    ):
+    if request.headers.get("x-addon") != "1":
+        log.warning("write_refused reason=missing_header")
+        raise HTTPException(403, "forbidden")
+    if allowed and request.headers.get("origin") != allowed:
+        # the received value is not logged (it is attacker-controlled); check ALLOWED_ORIGIN
+        log.warning("write_refused reason=origin_mismatch")
         raise HTTPException(403, "forbidden")
 
 

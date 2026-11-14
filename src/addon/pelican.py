@@ -78,6 +78,7 @@ class PelicanClient:
         }
         self._timeout = settings.pelican_timeout
         self._client = client
+        self._backup_body = {"ignored": settings.backup_ignored} if settings.backup_ignored else {}
         self._last_log: dict[str, float] = {}
 
     def _fail(self, kind: str, status: int | None, detail: str) -> None:
@@ -150,7 +151,7 @@ class PelicanClient:
 
     async def create_backup(self) -> Backup | None:
         """None: Pelican created it (2xx) but the body could not be parsed (logged)."""
-        resp = await self._request("POST", "/backups", {})
+        resp = await self._request("POST", "/backups", self._backup_body)
         try:
             data = resp.json()
         except ValueError:

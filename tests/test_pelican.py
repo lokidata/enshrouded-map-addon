@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -377,3 +378,20 @@ def test_create_backup_2xx_invalid_json_is_none() -> None:
     assert (
         run_client(lambda request: httpx.Response(200, content=b"<html>"), "create_backup") is None
     )
+
+
+def test_create_backup_sends_the_ignore_list_when_configured() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"attributes": PENDING})
+
+    settings = SETTINGS.model_copy(update={"backup_ignored": "/*\n!/savegame/\n!/savegame/**"})
+
+    async def run() -> Any:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await PelicanClient(settings, client).create_backup()
+
+    asyncio.run(run())
+    assert json.loads(seen[0].content) == {"ignored": "/*\n!/savegame/\n!/savegame/**"}

@@ -624,3 +624,13 @@ def test_key_never_in_action_responses_or_logs(
     bodies.append(client.get("/addon/api/journal", headers=as_("admin")).text)
     assert all(KEY not in b for b in bodies)
     assert all(KEY not in r.getMessage() and KEY not in str(r.args) for r in caplog.records)
+
+
+def test_refused_write_is_logged_without_the_received_origin(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    headers = as_("admin", {"X-Addon": "1", "Origin": "https://evil.example.test\nforged"})
+    with caplog.at_level("WARNING", logger="addon.api"):
+        assert client.post("/addon/api/backups", headers=headers).status_code == 403
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "origin_mismatch" in text and "evil.example.test" not in text
