@@ -1,0 +1,169 @@
+/* All CSS is global: a component style would be injected as an inline <style>, which the CSP forbids. */
+body {
+  margin: 0;
+}
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1.5rem;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1rem 1rem 0;
+}
+.top h1 {
+  margin: 0;
+  margin-right: auto;
+  color: var(--gold);
+}
+nav {
+  display: flex;
+  gap: 1rem;
+}
+nav a {
+  font-family: var(--display-sc);
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.25rem 0;
+  border-bottom: 2px solid transparent;
+}
+nav a.on {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.pill.state.up {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+.err {
+  color: var(--bad);
+  margin: 0.25rem 0;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.scroll {
+  overflow-x: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--gold-dim);
+}
+th {
+  font-family: var(--display-sc);
+  color: var(--muted);
+  font-weight: normal;
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* collapsible sections */
+details.sec {
+  margin-block: 1rem;
+  padding: 0;
+}
+details.sec > summary {
+  font-family: var(--display-sc);
+  font-size: 1.15rem;
+  color: var(--gold);
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+}
+details.sec[open] > summary {
+  color: var(--accent);
+}
+.sec-body {
+  padding: 0 1rem 1rem;
+}
+
+dialog.plate {
+  color: var(--text);
+  background: var(--panel);
+  max-width: 28rem;
+}
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.pre {
+  white-space: pre-line;
+}
+textarea {
+  width: 100%;
+  font-family: var(--mono);
+}
+pre {
+  overflow: auto;
+  max-height: 24rem;
+  white-space: pre;
+  border: 1px solid var(--gold-dim);
+  border-radius: 3px;
+  padding: 0.5rem;
+}
+pre:empty {
+  display: none;
+}
+#cs-list {
+  min-width: 16rem;
+}
+
+main a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+main a:hover {
+  color: var(--accent-hover);
+}
+.sec-body h3 {
+  font-family: var(--display-sc);
+  color: var(--gold);
+  font-weight: normal;
+  margin: 1.25rem 0 0.4rem;
+}
+.sec-body h4 {
+  font-family: var(--display-sc);
+  color: var(--muted);
+  font-weight: normal;
+  margin: 1rem 0 0.25rem;
+}
+.sec-body ul,
+.sec-body ol {
+  margin: 0.4rem 0;
+  padding-left: 1.4rem;
+}
+.sec-body li {
+  margin: 0.35rem 0;
+}
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--gold);
+}
