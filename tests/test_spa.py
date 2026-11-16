@@ -52,3 +52,17 @@ def test_security_headers_on_the_app_and_on_a_deep_link(client: TestClient) -> N
         resp = client.get(path)
         assert resp.headers["content-security-policy"] == CSP
         assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+def test_missing_ui_folder_is_404_not_a_crash(tmp_path: Path) -> None:
+    settings = Settings(
+        pelican_url="https://panel.example.test",
+        pelican_api_key="pacc_TEST",  # type: ignore[arg-type]
+        pelican_server_id="abcd1234",
+        site_url="http://site.example.test",
+        db_path=str(tmp_path / "addon.db"),
+        static_dir=str(tmp_path / "not-built"),
+    )
+    with TestClient(create_app(settings, httpx.MockTransport(lambda r: httpx.Response(500)))) as c:
+        assert c.get("/addon/").status_code == 404
+        assert c.get("/addon/mods").status_code == 404

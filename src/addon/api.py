@@ -683,6 +683,9 @@ class Page(StaticFiles):
 class SpaFiles(Page):
     """Serves the built app; a path with no file extension (a route) gets index.html."""
 
+    async def check_config(self) -> None:
+        """A missing UI folder (tests, API-only dev) is a plain 404, not a crash."""
+
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
             return await super().get_response(path, scope)
