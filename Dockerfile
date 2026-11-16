@@ -9,14 +9,14 @@ COPY frontend ./
 RUN npm run build
 
 # The tag keeps Dependabot on Python 3.13; the digest pins the exact image.
-FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS build
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS build
 WORKDIR /build
 # Dependencies pinned and hash-checked (requirements.lock comes from `make lock`).
 COPY requirements.lock .
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.lock
 
-FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 ENV PATH=/opt/venv/bin:$PATH PYTHONPATH=/srv/src PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 # Fixed packages that the pinned base image does not have yet (apt); Dependabot moves the base forward.
 RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
