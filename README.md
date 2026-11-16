@@ -15,9 +15,10 @@ Run it as its own container and set `ADDON_URL` (origin only, e.g. `http://addon
 ## Run
 ```bash
 make check   # ruff, mypy, bandit, pip-audit, pytest
+make check-frontend   # npm audit, lint (+ design guard), build, Vitest, Playwright + AXE
 make lock    # regenerate requirements.lock after a dependency change
 ```
-Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack in `deploy/`.
+The UI is an Angular app in `frontend/` (Node 24 to build; `cd frontend && npm ci --ignore-scripts && npm run build`, then run the API with `STATIC_DIR` unset: it serves `frontend/dist/browser`). Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack in `deploy/`.
 
 ## Security notes
 - Pelican failures are logged with their reason (and the refused IP address when Pelican says it); the key is read from the environment only, never logged or returned; the browser never calls Pelican.

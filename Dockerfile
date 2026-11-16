@@ -1,4 +1,13 @@
 # syntax=docker/dockerfile:1
+# The UI is built here and only the static files travel on: the final image has no Node.
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS web
+ENV NG_CLI_ANALYTICS=false
+WORKDIR /web/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY frontend ./
+RUN npm run build
+
 # The tag keeps Dependabot on Python 3.13; the digest pins the exact image.
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS build
 WORKDIR /build
@@ -19,6 +28,7 @@ COPY --from=build /opt/venv /opt/venv
 RUN /opt/venv/bin/python -m pip uninstall -y pip && /usr/local/bin/python -m pip uninstall -y pip
 WORKDIR /srv
 COPY src ./src
+COPY --from=web /web/frontend/dist/browser ./frontend/dist/browser
 USER app
 VOLUME /data
 EXPOSE 8000

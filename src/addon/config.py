@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     backup_ignored: str = ""
     # chestsort categories file, relative to the server root; unset = feature off
     chestsort_file: str | None = None
+    # folder of the built UI; empty = frontend/dist/browser next to src/
+    static_dir: str = ""
 
     @model_validator(mode="after")
     def _normalise_url(self) -> Self:

@@ -15,6 +15,7 @@ import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 from starlette.types import Scope
 
@@ -668,7 +669,7 @@ async def chestsort_restore(
     return await journalled(request, who, "chestsort", "restore", run)
 
 
-CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
 
 class Page(StaticFiles):
@@ -677,6 +678,22 @@ class Page(StaticFiles):
         resp.headers["Content-Security-Policy"] = CSP
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
+
+
+class SpaFiles(Page):
+    """Serves the built app; a path with no file extension (a route) gets index.html."""
+
+    async def check_config(self) -> None:
+        """A missing UI folder (tests, API-only dev) is a plain 404, not a crash."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            last = path.rsplit("/", 1)[-1]
+            if exc.status_code != 404 or "." in last or path.startswith("api/"):
+                raise
+            return await super().get_response("index.html", scope)
 
 
 def create_app(
@@ -696,5 +713,9 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(router)
-    app.mount("/addon", Page(directory=Path(__file__).parent / "static", html=True))
+    cfg = settings or get_settings()
+    # the built UI; a missing folder (tests, dev API only) is not an error, every page is a 404
+    default = Path(__file__).resolve().parents[2] / "frontend" / "dist" / "browser"
+    folder = Path(cfg.static_dir) if cfg.static_dir else default
+    app.mount("/addon", SpaFiles(directory=folder, html=True, check_dir=False))
     return app

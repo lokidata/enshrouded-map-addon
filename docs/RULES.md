@@ -17,7 +17,14 @@ A small service that shows an Enshrouded game server's status, lets level `actio
 `action` adds `POST /power`, `POST /backups` and `POST /backups/{uuid}/download` to what `read` sees. The administrator is implicit (always `action`); an empty list means administrator only.
 
 ## Screen
-One static page (`/addon/`, HTML + vanilla JS, no build): server name, state, CPU, memory, disk, uptime; two cards for `action` users (below); the backup list (everyone with access); the journal; for the administrator, the access list with one level selector per site account.
+An Angular app (`frontend/`, built to static files that the API process serves under `/addon/`; no Node in the image) with the site's "Codex of the Shroud" look (`frontend/src/ds/`, copied from the site's `design-system/`, not synced automatically). Two pages with a header (title, navigation, a state pill that follows `/status`):
+
+- **Serveur** (`/addon/`): section **Pelican** (open by default): state card (name state, CPU, memory, disk, uptime), the Actions card, the backup list; section **Journal** (closed); section **Accès** (closed, administrator only).
+- **Mods** (`/addon/mods`): section **Les mods du serveur** (open by default): short French text on chestsort and storage (only the installed mods are described); section **Catégories de coffres** (closed, only when `me.chestsort` is true).
+
+**Languages**: French and English. Two buttons FR and EN in the header; the choice is remembered per browser (`localStorage`, `addon-lang`); the first visit follows the browser language (French if it starts with `fr`, English otherwise). The page's `<html lang>`, dates (`fr-FR` or `en-GB`) and units (Go/Mo or GB/MB, `j` or `d`) follow it. Texts live in `frontend/src/app/core/lang.fr.ts` and `lang.en.ts` (a test checks both have the same keys and `{params}`); the long explanation of the Mods page is one component per language. Error sentences already shown (state, lists) keep the language they were made in until the next load or poll. The journal shows the raw values the API stores (action, target, result), not translated.
+
+Sections are `<details>`; the open state of each is remembered per browser in `localStorage` (when it is unavailable the defaults apply). A path without a file extension that is not under `api/` serves `index.html` (deep links); a missing file or API path is a plain 404. The page needs the CSP `default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`: no inline `<style>` or `style=""` (all CSS is global, enforced by `npm run lint`). Level `read` sees the state, the backup list, the journal (as before); the Actions card, the create and download buttons and the editor's buttons are for `action` only.
 
 ### Actions card (level `action` and administrator only)
 Buttons Start, Stop, Restart start disabled, are enabled from the polled state (Start only when `offline`, Stop and Restart only when `running`), are disabled while the state is unknown (failed or missing `/status` read) and all disabled while a request is in flight. Stop and Restart open a dialog with the checkbox "J'ai prévenu les joueurs"; Confirm stays disabled until it is ticked and then sends `confirm: true`. Start sends no confirmation. Errors show in French, 429 with the wait in seconds. After each action the status, the backup list and (when shown) the journal are reloaded.
@@ -115,6 +122,7 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 | `SITE_URL` | required | internal URL of the site |
 | `DB_PATH` | `/data/addon.db` | SQLite file |
 | `JOURNAL_DAYS` | 1 | journal retention |
+| `STATIC_DIR` | `frontend/dist/browser` next to `src/` | folder of the built UI (set in dev only; the image has it in place) |
 | `PELICAN_TIMEOUT` | 10 | seconds |
 | `ALLOW_HTTP` | false | accept an `http://` panel URL |
 | `ALLOWED_ORIGIN` | unset | exact `Origin` required on writes; must look like `https://host[:port]` (scheme, no path; a trailing `/` is stripped; anything else stops the start). A refused write logs `write_refused reason=missing_header\|origin_mismatch` (never the received value) |

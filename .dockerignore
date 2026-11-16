@@ -1,6 +1,10 @@
-.git
-.venv
-.env*
 *.db*
-tests
+docs
+.env*
+frontend/.angular
+frontend/dist
+.git
+**/node_modules
 **/__pycache__
+tests
+.venv

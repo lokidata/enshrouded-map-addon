@@ -12,4 +12,13 @@ updates:
     cooldown: {default-days: 7}
     groups:
       python: {patterns: ["*"], update-types: [minor, patch]}
-  # Add the docker ecosystem here when the Dockerfile lands.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}
+    groups:
+      npm: {patterns: ["*"], update-types: [minor, patch]}
+  - package-ecosystem: docker
+    directory: /
+    schedule: {interval: weekly}
+    cooldown: {default-days: 7}
