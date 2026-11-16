@@ -14,7 +14,7 @@ A small service that shows an Enshrouded game server's status, lets level `actio
 | None / not listed | refused (403) | refused (403) | refused | refused |
 | Not logged in | 401 | 401 | 401 | 401 |
 
-`action` adds `POST /power` and `POST /backups` to what `read` sees. The administrator is implicit (always `action`); an empty list means administrator only.
+`action` adds `POST /power`, `POST /backups` and `POST /backups/{uuid}/download` to what `read` sees. The administrator is implicit (always `action`); an empty list means administrator only.
 
 ## Screen
 One static page (`/addon/`, HTML + vanilla JS, no build): server name, state, CPU, memory, disk, uptime; two cards for `action` users (below); the backup list (everyone with access); the journal; for the administrator, the access list with one level selector per site account.
@@ -36,6 +36,7 @@ Shown only when `CHESTSORT_FILE` is set. Structured editor, French: list of cate
 - One lock serialises power and backup creation: a double click or two users at once send one Pelican call, the second sees the new state or window. A request waits at most 5 s for the lock (then 409 `busy`); the locked section (status read and Pelican call) is bounded to 25 s (then 504 `pelican_timeout`, the window starts since the outcome is unknown); the lock is always released.
 - Order of checks: level (403), body validity, confirmation, then under the lock state, rate limit, Pelican call.
 - Pelican refusals: 403 -> 502 `pelican_denied`, 404 -> 502 `pelican_not_found`, 5xx, timeout, redirect or unexpected shape -> 502 `pelican_unavailable`, 400/409/422 on a POST -> 409 `pelican_rejected` (e.g. backup limit reached; Pelican's reason goes to the container log only, not to the response). 400/409/422 on a GET (status, backup list, the status read before a power action) -> 502 `pelican_unavailable`. Any 2xx from Pelican on a POST counts as success.
+- Download: `POST /backups/{uuid}/download` (level `action`, `X-Addon` guard; `uuid` must be a UUID, else 404/422 and nothing sent) reads the backup from Pelican, refuses with 409 `backup_not_ready` unless `completed_at` is set and `is_successful` is true, then asks Pelican for a one-time signed URL and returns `{"url"}` (http/https only, else 502). The URL is a credential: never logged, never journalled (journal: action `backup`, target `download:<uuid>`). No lock (read-only on the panel); one request per 5 s for everyone (429). Pelican refusals are 502 like elsewhere. The page shows a "Télécharger" button per finished backup (`action` only) and navigates to the URL; the browser must reach the node (Wings) address. Delete, restore and lock stay out of the add-on.
 - An unexpected error inside `POST /power` or `POST /backups` is journalled `internal_error` and answers 500 `internal_error` (traceback in the container log).
 - Success: `POST /power` returns `{"signal", "result": "ok"}`; `POST /backups` returns the created backup (`uuid`, `name`, `bytes`, `created_at`, `completed_at`, `is_successful`, `is_locked`), or `{"backup": null}` when Pelican answered 2xx with a body that cannot be parsed (logged `bad_response`; still a success: journalled `ok`, window started).
 - Not offered: backup restore, delete, download or lock; `kill`.

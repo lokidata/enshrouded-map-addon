@@ -40,6 +40,7 @@ const REASONS = {
   pelican_timeout: "Le panneau n'a pas répondu à temps : l'action a peut-être été faite, vérifiez l'état.",
   busy: "Une autre action est en cours, réessayez dans quelques secondes.",
   forbidden: "Action non autorisée.",
+  backup_not_ready: "Cette sauvegarde n'est pas terminée ou a échoué.",
 };
 
 function failure(err) {
@@ -180,6 +181,25 @@ function fmtSize(n) {
   return n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + " Go" : (n / 2 ** 20).toFixed(1) + " Mo";
 }
 
+function dlButton(uuid) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "Télécharger";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const { url } = await post("/backups/" + uuid + "/download", {});
+      $("b-err").textContent = "";
+      location.assign(url); // one-time signed URL: the browser downloads from the node
+    } catch (err) {
+      $("b-err").textContent = failure(err);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return btn;
+}
+
 async function loadBackups() {
   const body = $("b-body");
   try {
@@ -188,7 +208,8 @@ async function loadBackups() {
     $("b-err").textContent = "";
     for (const b of rows) {
       const st = b.completed_at === null ? "en cours" : b.is_successful === false ? "échec" : "";
-      row(body, [b.name, fmtSize(b.bytes), new Date(b.created_at).toLocaleString("fr-FR"), st]);
+      const ready = b.completed_at !== null && b.is_successful === true;
+      row(body, [b.name, fmtSize(b.bytes), new Date(b.created_at).toLocaleString("fr-FR"), st, canAct && ready ? dlButton(b.uuid) : ""]);
     }
   } catch (err) {
     $("b-err").textContent = failure(err);

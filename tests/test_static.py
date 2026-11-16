@@ -133,3 +133,8 @@ def test_chestsort_review_fixes_in_the_page(client: TestClient) -> None:
     assert "abîmé" in rollback
     assert "err.backup" in js
     assert "backup: body.backup" in client.get("/addon/app.js").text
+
+
+def test_backup_download_button_is_built_with_textcontent(client: TestClient) -> None:
+    js = client.get("/addon/app.js").text
+    assert "/download" in js and "location.assign(url)" in js and "Télécharger" in js

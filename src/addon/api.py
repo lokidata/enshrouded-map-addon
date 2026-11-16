@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -44,6 +45,7 @@ PELICAN_ERRORS: dict[type[Exception], tuple[str, int | None]] = {
 PELICAN_FAILURES = (PelicanDenied, PelicanNotFound, PelicanUnavailable, PelicanRejected)
 POWER_WINDOW = 30  # seconds, global (not per user)
 BACKUP_WINDOW = 300
+DOWNLOAD_WINDOW = 5
 LOCK_WAIT = 5  # seconds a second action waits for the lock before `busy`
 ACTION_TIMEOUT = 25  # seconds for the whole locked section (status read + Pelican call)
 CHESTSORT_WINDOW = 10
@@ -320,6 +322,25 @@ async def power(request: Request, who: Actor) -> dict[str, Any] | JSONResponse:
         return {"signal": body.signal, "result": "ok"}
 
     return await journalled(request, who, "power", target, run)
+
+
+@router.post("/backups/{uuid}/download", response_model=None)
+async def download_backup(
+    request: Request, uuid: UUID, who: Actor
+) -> dict[str, Any] | JSONResponse:
+    pelican: PelicanClient = request.app.state.pelican
+
+    async def fetch() -> str:
+        backup = await pelican.backup(str(uuid))
+        if backup.completed_at is None or backup.is_successful is not True:
+            raise Refused(409, "backup_not_ready")
+        return await pelican.download_url(str(uuid))
+
+    async def run() -> dict[str, Any]:
+        # read-only on the panel: no lock; the URL goes to the caller only
+        return {"url": await throttled(request, "download", DOWNLOAD_WINDOW, fetch)}
+
+    return await journalled(request, who, "backup", f"download:{uuid}", run)
 
 
 @router.get("/backups")
