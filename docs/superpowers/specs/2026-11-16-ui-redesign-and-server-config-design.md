@@ -19,6 +19,17 @@ The add-on works but looks bare. The owner wants the site's visual identity ("Co
 - Never send passwords, ports or other keys of the server file to the browser; never rewrite them.
 - No chestsort UX rework in this work.
 
+## Step 3: game server console (read-only first)
+**Why:** follow the server without opening the panel.
+- Source: Pelican client API `GET /servers/{id}/websocket` (token + Wings socket URL), then the Wings websocket (console lines, state, stats). Sending commands is `POST /servers/{id}/command`.
+- **Chosen way: the add-on connects to Wings and relays the lines to the browser** (server-sent events or its own websocket). The token never reaches the browser, the add-on's access levels apply, nothing to change in Wings. Rejected: browser straight to Wings (token in the browser, Wings must allow the site's origin).
+- Read-only first. Sending commands is a separate decision: it bypasses the add-on's confirmations (stop, restart), so it would need level `action`, a confirmation, a journal entry and a short allow-list.
+- The console may show player IPs and chat: shown only to level `action` (to confirm with the owner), never journalled.
+- Pelican permission to add to the dedicated sub-user: `websocket.connect` (and `control.console` only if commands come later).
+- Limits to design: one upstream connection shared by all viewers, a cap on viewers, a ring buffer of the last lines, reconnect with a new token, idle disconnect when nobody watches.
+- Placement: a third section of the Serveur page (closed by default), after the game settings.
+- Not verifiable without the real panel: the Wings origin and token behaviour; the owner tests it.
+
 ## Approaches (chosen: B)
 - A. "Send to server" button on the site's Game page: reuses its UI but changes the site. Rejected: breaks "additive".
 - **B. Form inside the add-on, built from a table of settings copied from the site (`frontend/src/app/core/game-settings.model.ts`).** Chosen. Cost: the table lives in two places; updated by copy.
