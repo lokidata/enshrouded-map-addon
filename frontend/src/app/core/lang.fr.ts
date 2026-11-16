@@ -24,6 +24,7 @@ export const fr = {
   'sec.access': 'Accès',
   'sec.mods': 'Les mods du serveur',
   'sec.chestsort': 'Catégories de coffres',
+  'status.name': 'Nom',
   'status.state': 'État',
   'status.cpu': 'Processeur',
   'status.memory': 'Mémoire',

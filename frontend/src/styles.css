@@ -167,3 +167,52 @@ code {
   font-size: 0.9em;
   color: var(--gold);
 }
+
+/* the console look of the panel: figures as tiles, actions as one joined group */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 0.75rem;
+}
+.tile {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--gold-dim);
+  border-radius: 3px;
+  background: var(--panel-deep);
+}
+.tile .k {
+  color: var(--muted);
+  margin-right: 0.35rem;
+}
+.tile .v {
+  color: var(--text);
+  font-weight: bold;
+}
+.tile .v.up {
+  color: var(--ok);
+}
+.bar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-bottom: 0.75rem;
+}
+.bar p {
+  margin: 0.25rem 0 0;
+  text-align: right;
+}
+.btn-group {
+  display: inline-flex;
+}
+.btn-group .btn {
+  border-radius: 0;
+  margin-left: -1px;
+}
+.btn-group .btn:first-child {
+  border-radius: 3px 0 0 3px;
+  margin-left: 0;
+}
+.btn-group .btn:last-child {
+  border-radius: 0 3px 3px 0;
+}

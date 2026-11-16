@@ -26,6 +26,7 @@ export const en: Record<Key, string> = {
   'sec.access': 'Access',
   'sec.mods': 'Server mods',
   'sec.chestsort': 'Chest categories',
+  'status.name': 'Name',
   'status.state': 'State',
   'status.cpu': 'CPU',
   'status.memory': 'Memory',

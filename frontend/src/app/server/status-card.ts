@@ -3,24 +3,40 @@ import { fmtGo, fmtUptime } from '../core/format';
 import { I18n, T } from '../core/i18n';
 import { Status, stateLabel } from '../core/status';
 
+/** The server's figures as tiles, like the panel's console page. */
 @Component({
   imports: [T],
   selector: 'app-status-card',
   template: `
-    <dl>
-      <dt>{{ 'status.state' | t }}</dt>
-      <dd>{{ label(status.state()) }}</dd>
+    <div class="tiles">
       @if (status.info(); as s) {
-        <dt>{{ 'status.cpu' | t }}</dt>
-        <dd>{{ s.cpu.toFixed(1) }} %</dd>
-        <dt>{{ 'status.memory' | t }}</dt>
-        <dd>{{ go(s.memory_bytes) }}</dd>
-        <dt>{{ 'status.disk' | t }}</dt>
-        <dd>{{ go(s.disk_bytes) }}</dd>
-        <dt>{{ 'status.uptime' | t }}</dt>
-        <dd>{{ uptime(s.uptime_ms) }}</dd>
+        <p class="tile">
+          <span class="k">{{ 'status.name' | t }}</span> <span class="v">{{ s.name }}</span>
+        </p>
       }
-    </dl>
+      <p class="tile">
+        <span class="k">{{ 'status.state' | t }}</span>
+        <span class="v" [class.up]="status.state() === 'running'">{{ label(status.state()) }}</span>
+      </p>
+      @if (status.info(); as s) {
+        <p class="tile">
+          <span class="k">{{ 'status.uptime' | t }}</span>
+          <span class="v">{{ uptime(s.uptime_ms) }}</span>
+        </p>
+        <p class="tile">
+          <span class="k">{{ 'status.cpu' | t }}</span>
+          <span class="v">{{ s.cpu.toFixed(1) }} %</span>
+        </p>
+        <p class="tile">
+          <span class="k">{{ 'status.memory' | t }}</span>
+          <span class="v">{{ go(s.memory_bytes) }}</span>
+        </p>
+        <p class="tile">
+          <span class="k">{{ 'status.disk' | t }}</span>
+          <span class="v">{{ go(s.disk_bytes) }}</span>
+        </p>
+      }
+    </div>
     <p role="alert" class="err">{{ status.error() }}</p>
   `,
 })

@@ -22,11 +22,10 @@ import { StatusCard } from './status-card';
       <p role="alert" class="err">{{ 'common.no_access' | t }}</p>
     } @else {
       <app-section [heading]="'sec.pelican' | t" storageKey="server-pelican" [open]="true">
-        <app-status-card />
         @if (session.canAct()) {
-          <h3>{{ 'sec.actions' | t }}</h3>
-          <app-power />
+          <div class="bar"><app-power /></div>
         }
+        <app-status-card />
         <h3>{{ 'sec.backups' | t }}</h3>
         <app-backups />
       </app-section>

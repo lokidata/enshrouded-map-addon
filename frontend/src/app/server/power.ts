@@ -13,13 +13,19 @@ const NEEDS: Record<Signal, string> = { start: 'offline', stop: 'running', resta
 @Component({
   selector: 'app-power',
   template: `
-    <p class="row">
+    <div class="btn-group" role="group" [attr.aria-label]="group()">
       @for (s of signals; track s) {
-        <button type="button" class="btn" [disabled]="!enabled(s)" (click)="run(s)">
+        <button
+          type="button"
+          class="btn"
+          [class.danger]="s === 'stop'"
+          [disabled]="!enabled(s)"
+          (click)="run(s)"
+        >
           {{ label(s) }}
         </button>
       }
-    </p>
+    </div>
     <p role="status">{{ message() }}</p>
     <p role="alert" class="err">{{ error() }}</p>
   `,
@@ -33,7 +39,11 @@ export class Power {
   protected readonly busy = signal(false);
   protected readonly message = signal('');
   protected readonly error = signal('');
-  protected readonly signals: Signal[] = ['start', 'stop', 'restart'];
+  protected readonly signals: Signal[] = ['start', 'restart', 'stop'];
+
+  protected group(): string {
+    return this.i18n.t('sec.actions');
+  }
 
   protected label(s: Signal): string {
     return this.i18n.t(`power.${s}`);
