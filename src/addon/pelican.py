@@ -199,6 +199,16 @@ class PelicanClient:
             self._backup(row.get("attributes") if isinstance(row, dict) else None) for row in rows
         ]
 
+    async def backup(self, uuid: str) -> Backup:
+        return self._backup(await self._get(f"/backups/{uuid}"))
+
+    async def download_url(self, uuid: str) -> str:
+        """One-time signed URL (a credential: never logged, never journalled)."""
+        url = (await self._get(f"/backups/{uuid}/download")).get("url")
+        if not (isinstance(url, str) and url.startswith(("https://", "http://"))):
+            raise self._bad()
+        return url
+
     async def create_backup(self) -> Backup | None:
         """None: Pelican created it (2xx) but the body could not be parsed (logged)."""
         resp = await self._request("POST", "/backups", self._backup_body)

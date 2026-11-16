@@ -40,6 +40,9 @@ BACKUP = {
     "is_locked": False,
 }
 
+DL_UUID = "0b1f2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+DL_URL = "https://node.example.test:8080/download/backup?token=SECRET_TOKEN"
+
 
 class Fake:
     """Site + Pelican behind one MockTransport; tests mutate the fields."""
@@ -57,6 +60,14 @@ class Fake:
         self.backup_status = 200
         self.backup_body: Any = {"attributes": BACKUP}
         self.backups_created = 0
+        self.dl_view: dict[str, Any] = {
+            **BACKUP,
+            "uuid": DL_UUID,
+            "completed_at": "x",
+            "is_successful": True,
+        }
+        self.dl_status = 200
+        self.dl_url: Any = DL_URL
         self.delay = 0.0
         self.files: dict[str, str] = {}  # Pelican file store: path -> text
         self.file_ops: list[tuple[str, str]] = []  # ("read"|"write"|"list", path)
@@ -83,6 +94,12 @@ class Fake:
             if path.endswith("/power"):
                 self.signals.append(json.loads(request.content)["signal"])
                 return httpx.Response(self.power_status)
+            if path.endswith(f"/backups/{DL_UUID}/download"):
+                if self.dl_status != 200:
+                    return httpx.Response(self.dl_status, json={"errors": [{"detail": "no"}]})
+                return httpx.Response(200, json={"attributes": {"url": self.dl_url}})
+            if path.endswith(f"/backups/{DL_UUID}"):
+                return httpx.Response(200, json={"attributes": self.dl_view})
             if path.endswith("/backups") and request.method == "POST":
                 self.backups_created += 1
                 return httpx.Response(self.backup_status, json=self.backup_body)
@@ -1301,3 +1318,65 @@ def test_deep_body_on_power_and_backups_is_refused_not_a_crash(client: TestClien
 def test_oversized_body_on_power_is_413(client: TestClient) -> None:
     resp = post(client, "/power", content=b" " * 1_100_000)
     assert (resp.status_code, resp.json()) == (413, {"detail": "too_large"})
+
+
+def dl(client: TestClient, who: str = "admin", uuid: str = DL_UUID) -> httpx.Response:
+    return post(client, f"/backups/{uuid}/download", who)
+
+
+def test_download_returns_url_and_journals_without_it(client: TestClient, fake: Fake) -> None:
+    resp = dl(client)
+    assert resp.status_code == 200 and resp.json() == {"url": DL_URL}
+    assert actions(client) == [("root", "backup", f"download:{DL_UUID}", "ok", None)]
+    assert "SECRET_TOKEN" not in client.get("/addon/api/journal", headers=as_("admin")).text
+
+
+def test_download_needs_action_level_and_csrf(client: TestClient, fake: Fake) -> None:
+    grant(client, ALICE_KEY, "read")
+    assert dl(client, "alice").status_code == 403 and dl(client, "bob").status_code == 403
+    assert (
+        client.post(f"/addon/api/backups/{DL_UUID}/download", headers=as_("admin")).status_code
+        == 403
+    )
+    assert fake.pelican_calls == 0
+
+
+@pytest.mark.parametrize("uuid", ["u1", "../power", "0b1f2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4dx"])
+def test_download_rejects_non_uuid(client: TestClient, fake: Fake, uuid: str) -> None:
+    assert dl(client, uuid=uuid).status_code in (404, 405, 422) and fake.pelican_calls == 0
+
+
+@pytest.mark.parametrize(
+    "view", [{"completed_at": None, "is_successful": None}, {"is_successful": False}]
+)
+def test_download_refuses_unfinished_or_failed(
+    client: TestClient, fake: Fake, view: dict[str, Any]
+) -> None:
+    fake.dl_view = {**fake.dl_view, **view}
+    resp = dl(client)
+    assert resp.status_code == 409 and resp.json()["detail"] == "backup_not_ready"
+    assert "SECRET_TOKEN" not in resp.text
+
+
+@pytest.mark.parametrize("url", [None, "", "ftp://x/y", 5, "javascript:alert(1)"])
+def test_download_bad_url_is_502(client: TestClient, fake: Fake, url: Any) -> None:
+    fake.dl_url = url
+    assert dl(client).status_code == 502
+
+
+@pytest.mark.parametrize("code", [400, 403, 404])
+def test_download_pelican_refusals_are_502(client: TestClient, fake: Fake, code: int) -> None:
+    fake.dl_status = code
+    assert dl(client).status_code == 502
+
+
+def test_download_is_rate_limited_to_5_s(client: TestClient, fake: Fake) -> None:
+    assert dl(client).status_code == 200
+    resp = dl(client)
+    assert resp.status_code == 429 and "Retry-After" in resp.headers
+
+
+def test_download_url_never_in_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("DEBUG")
+    dl(client)
+    assert "SECRET_TOKEN" not in caplog.text
