@@ -18,7 +18,15 @@ updates:
     cooldown: {default-days: 7}
     groups:
       npm: {patterns: ["*"], update-types: [minor, patch]}
+    ignore:
+      # Angular pins TypeScript (~6.0): a TypeScript major breaks `npm ci`. Move it with Angular.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker
     directory: /
     schedule: {interval: weekly}
     cooldown: {default-days: 7}
+    ignore:
+      # Node: odd majors are not LTS. Move to the next LTS by hand (CI and the image build on it).
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
