@@ -7,7 +7,7 @@
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "lint": "eslint . && node scripts/check-design.mjs",
+    "lint": "eslint . && node scripts/check-design.mjs && node scripts/check-ds.mjs",
     "e2e": "playwright test"
   },
   "private": true,
