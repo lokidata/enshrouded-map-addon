@@ -37,6 +37,10 @@ jobs:
   frontend:
     name: frontend
     runs-on: ubuntu-latest
+    # Browsers and system libraries come with the image; keep its tag equal to @playwright/test.
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:9beb546099e11f52d62e505537914870e01a67e0e6b00ae41da4775324e73dbe
+      options: --ipc=host
     timeout-minutes: 20
     permissions:
       contents: read
@@ -61,7 +65,6 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npx ng test --watch=false
-      - run: npx playwright install --with-deps chromium
       - run: uv sync --frozen
         working-directory: .
       - run: npx playwright test
