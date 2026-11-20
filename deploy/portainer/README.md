@@ -1,6 +1,6 @@
 # Deploying the add-on with Portainer
 
-The **Publish image** workflow pushes `ghcr.io/lokidata/enshrouded-map-addon` (`latest`, `sha-xxxxxxx`, `1.2.3`, `1.2`) on every push to `main` and on `v*.*.*` tags. Pin `IMAGE_TAG` for a stable server.
+The **Publish image** workflow pushes `ghcr.io/lokidata/enshrouded-map-addon` (`latest`, `sha-xxxxxxx`, `1.2.3`, `1.2`) on every push to `main` and on `v*.*.*` tags. Pin `ADDON_IMAGE_TAG` (not the site's `IMAGE_TAG`: the two repositories have their own versions, and the site's images may not exist at the add-on's version) for a stable server.
 
 The add-on is one more service of the **site's own stack** (same networks, one deployment, no ordering problem). Nothing changes for the site while `ADDON_URL` is empty.
 
@@ -14,7 +14,7 @@ The add-on is one more service of the **site's own stack** (same networks, one d
 - `api` and `web`, `environment`: add `ADDON_URL: ${ADDON_URL:-}`.
 - `web`: optionally add `addon: {condition: service_healthy}` under `depends_on` (starts the add-on first). Not required: the site resolves the add-on's name at request time (needs the site image from enshrouded-map#80 or later), so a missing add-on only makes `/addon/` answer 502.
 - Add the `addon` service from `service.example.yml`; create its data folder: `mkdir -p /opt/enshrouded/addon && chown 10001:10001 /opt/enshrouded/addon`.
-- Stack variables: `ADDON_URL=http://addon:8000`, `PELICAN_URL`, `PELICAN_SERVER_ID`, `PELICAN_API_KEY`, `ALLOWED_ORIGIN` (the origin players open).
+- Stack variables: `ADDON_IMAGE_TAG` (for example `0.4.1`), `ADDON_URL=http://addon:8000`, `PELICAN_URL`, `PELICAN_SERVER_ID`, `PELICAN_API_KEY`, `ALLOWED_ORIGIN` (the origin players open).
 
 ## 3. Check
 
