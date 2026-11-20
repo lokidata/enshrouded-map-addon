@@ -93,6 +93,10 @@ export function previewText(r: Preview, t: Translate): string {
 
 // ---- items: one item belongs to one category only (the server refuses a file where it is in two) ----
 
+/** An item the catalogue has no name for (the game gives it none): its internal name made readable. */
+export const prettyName = (item: string): string =>
+  item.replace(/^_+/, '').replace(/_+/g, ' ').trim();
+
 export const MAX_ITEM = 200;
 const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 

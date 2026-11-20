@@ -207,6 +207,10 @@
     border: 1px dashed var(--gold-dim);
     border-radius: 3px;
   }
+  & .cs-unnamed {
+    color: var(--muted);
+    font-style: italic;
+  }
   & .cs-tile .cs-x {
     position: absolute;
     top: 0;
