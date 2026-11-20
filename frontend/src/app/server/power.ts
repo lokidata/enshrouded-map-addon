@@ -13,11 +13,10 @@ const NEEDS: Record<Signal, string> = { start: 'offline', stop: 'running', resta
 @Component({
   selector: 'app-power',
   template: `
-    <div class="btn-group" role="group" [attr.aria-label]="group()">
+    <div class="actions" role="group" [attr.aria-label]="group()">
       @for (s of signals; track s) {
         <button
           type="button"
-          class="btn"
           [class.danger]="s === 'stop'"
           [disabled]="!enabled(s)"
           (click)="run(s)"

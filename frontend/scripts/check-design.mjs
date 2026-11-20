@@ -1,4 +1,4 @@
-// Design guard: the look of the site lives in the tokens of src/ds/tokens.css ("Codex of the Shroud", see CLAUDE.md).
+// Design guard: the look comes from the site's tokens ("Codex of the Shroud", see docs/style-contract.md and CLAUDE.md).
 // This script fails when a style brings its own colour, font or big radius instead of using a token.
 // Run by `npm run lint:design` (make check-frontend and CI).
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -8,7 +8,7 @@ const root = new URL('../src', import.meta.url).pathname;
 
 // Files where a colour is data or an illustration, not part of the theme.
 const COLOUR_DATA = new Set([]); // no colour data in this app
-const TOKENS = 'ds/tokens.css'; // where the colours are defined
+const TOKENS = ''; // the tokens live in the site, not in this repo: no file may define a colour
 
 const rules = [
   {
@@ -29,7 +29,7 @@ const rules = [
         .filter((c) => !/^rgba?\(\s*(0\s*,\s*0\s*,\s*0|255\s*,\s*255\s*,\s*255)\b/.test(c))
         .at(0),
     skip: (file) => file === TOKENS || COLOUR_DATA.has(file),
-    hint: 'use a colour token (var(--gold), var(--ink)...) or add one to src/ds/tokens.css',
+    hint: 'use a colour token (var(--gold), var(--ink)...); a new colour belongs to the site, in its src/styles.css',
   },
   {
     name: 'uppercase',
@@ -73,7 +73,6 @@ function* walk(dir) {
 const found = [];
 for (const path of walk(root)) {
   const file = relative(root, path);
-  if (file.startsWith('ds/')) continue; // the copied design system defines the tokens
   const lines = readFileSync(path, 'utf8').split('\n');
   const styled = (i) => file.endsWith('.css') || file.endsWith('.html') || inStyles(lines, i);
   lines.forEach((line, i) => {

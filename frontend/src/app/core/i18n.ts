@@ -1,42 +1,25 @@
-import { Injectable, Pipe, PipeTransform, computed, effect, inject, signal } from '@angular/core';
+import { Injectable, Pipe, PipeTransform, computed, inject, signal } from '@angular/core';
+import { de } from './lang.de';
 import { en } from './lang.en';
 import { fr, Key } from './lang.fr';
 
-export type Lang = 'fr' | 'en';
+export type Lang = 'fr' | 'en' | 'de';
 export type Params = Record<string, string | number>;
 /** A translator, for the plain functions that build a sentence. */
 export type Translate = (key: Key, params?: Params) => string;
 
-const STORE = 'addon-lang';
-const TEXTS: Record<Lang, Record<Key, string>> = { fr, en };
+const LOCALES: Record<Lang, string> = { fr: 'fr-FR', en: 'en-GB', de: 'de-DE' };
+const TEXTS: Record<Lang, Record<Key, string>> = { fr, en, de };
 
-function initial(): Lang {
-  try {
-    const saved = localStorage.getItem(STORE);
-    if (saved === 'fr' || saved === 'en') return saved;
-  } catch {
-    /* storage unavailable: the browser language decides */
-  }
-  return navigator.language.toLowerCase().startsWith('fr') ? 'fr' : 'en';
-}
-
-/** FR/EN texts. The choice is remembered per browser; the first visit follows the browser language. */
+/** FR/EN/DE texts. The language comes from the site, through the `lang` attribute of the element. */
 @Injectable({ providedIn: 'root' })
 export class I18n {
-  readonly lang = signal<Lang>(initial());
-  readonly locale = computed(() => (this.lang() === 'fr' ? 'fr-FR' : 'en-GB'));
+  readonly lang = signal<Lang>('fr');
+  readonly locale = computed(() => LOCALES[this.lang()]);
 
-  constructor() {
-    effect(() => (document.documentElement.lang = this.lang()));
-  }
-
-  set(lang: Lang): void {
-    this.lang.set(lang);
-    try {
-      localStorage.setItem(STORE, lang);
-    } catch {
-      /* the choice only lasts for this page */
-    }
+  /** `fr` and `de` are the site's other languages; any other code falls back to English. */
+  setLang(code: string): void {
+    this.lang.set(code === 'fr' || code === 'de' ? code : 'en');
   }
 
   readonly t: Translate = (key, params) => {

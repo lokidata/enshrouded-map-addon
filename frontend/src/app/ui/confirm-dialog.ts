@@ -7,7 +7,7 @@ import { T } from '../core/i18n';
   imports: [T],
   selector: 'app-confirm-dialog',
   template: `
-    <dialog #dlg class="plate" aria-labelledby="c-title" (close)="dismiss()">
+    <dialog #dlg aria-labelledby="c-title" (close)="dismiss()">
       @if (request(); as r) {
         <h2 id="c-title">{{ r.title }}</h2>
         <p>
@@ -15,10 +15,10 @@ import { T } from '../core/i18n';
           <label for="c-warned">{{ r.label }}</label>
         </p>
         <p class="row">
-          <button type="button" class="btn ok" [disabled]="!ticked()" (click)="r.done(true)">
+          <button type="button" class="ok" [disabled]="!ticked()" (click)="r.done(true)">
             {{ 'confirm.ok' | t }}
           </button>
-          <button type="button" class="btn cancel" (click)="r.done(false)">
+          <button type="button" class="cancel" (click)="r.done(false)">
             {{ 'confirm.cancel' | t }}
           </button>
         </p>
@@ -36,7 +36,8 @@ export class ConfirmDialog {
       const dialog = this.dlg().nativeElement;
       if (this.request()) {
         this.ticked.set(false);
-        if (!dialog.open) dialog.showModal();
+        // each element has its own dialog: one inside a hidden screen must not open
+        if (!dialog.open && !dialog.closest('[hidden]')) dialog.showModal();
       } else if (dialog.open) {
         dialog.close();
       }

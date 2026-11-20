@@ -197,3 +197,28 @@ def test_bak_name_never_reuses_a_taken_name() -> None:
 )
 def test_is_bak_name_rejects(name: str) -> None:
     assert not cs.is_bak_name("chestsort_categories.json", name)
+
+
+def test_an_item_in_two_categories_is_an_error() -> None:
+    obj = sample()
+    obj["categories"]["Plantes"]["items"].append("iron_bar")  # same item, other case
+    r = cs.validate(obj)
+    assert len(r.errors) == 1
+    assert (
+        "iron_bar" in r.errors[0].lower() and "Métaux" in r.errors[0] and "Plantes" in r.errors[0]
+    )
+
+
+def test_the_same_item_twice_in_one_category_is_not_that_error() -> None:
+    obj = sample()
+    obj["categories"]["Plantes"]["items"].append("Herb_01")
+    assert cs.validate(obj).errors == []
+
+
+def test_item_duplicates_are_capped_in_the_messages() -> None:
+    obj = sample()
+    names = [f"Item_{i}" for i in range(50)]
+    obj["categories"]["Métaux"]["items"] += names
+    obj["categories"]["Plantes"]["items"] += names
+    r = cs.validate(obj)
+    assert len(r.errors) == 21 and "30 autres" in r.errors[-1]

@@ -3,12 +3,19 @@ import { ApiError } from '../../core/api';
 import { I18n } from '../../core/i18n';
 import {
   addCategory,
+  addItems,
   Cats,
   csFailure,
   deleteCategory,
+  duplicates,
   filterItems,
+  itemProblem,
   lines,
+  moveItems,
+  ownerOf,
+  parseNames,
   previewText,
+  removeItem,
   renameCategory,
 } from './chestsort.logic';
 
@@ -17,7 +24,7 @@ const cats: Cats = { Food: { words: ['a'], items: ['x'] }, Wood: { words: [], it
 describe('chestsort logic', () => {
   const t = (...a: Parameters<I18n['t']>) => {
     const i = TestBed.inject(I18n);
-    i.set('fr');
+    i.setLang('fr');
     return i.t(...a);
   };
   afterEach(() => localStorage.clear());
@@ -87,12 +94,69 @@ describe('chestsort logic', () => {
 
   it('speaks English too', () => {
     const i = TestBed.inject(I18n);
-    i.set('en');
+    i.setLang('en');
     expect(csFailure(new ApiError(409, 'changed_elsewhere'), i.t)).toBe(
       'The file changed: reload.',
     );
     expect(previewText({ errors: [], warnings: [], changed: false, diff: [] }, i.t)).toBe(
       'No changes.',
     );
+  });
+});
+
+describe('chestsort items: one item, one category', () => {
+  const c = (): Cats => ({
+    Food: { words: [], items: ['Apple', 'Bread'] },
+    Metal: { words: [], items: ['Iron_Bar'] },
+  });
+
+  it('splits what is typed or pasted on lines, commas and semicolons, once per name', () => {
+    expect(parseNames(' Iron_Bar,Tin_Bar;\n\n iron_bar \nCopper_Bar')).toEqual([
+      'Iron_Bar',
+      'Tin_Bar',
+      'Copper_Bar',
+    ]);
+    expect(parseNames('  ')).toEqual([]);
+  });
+
+  it('refuses a name that is too long or has a control character', () => {
+    expect(itemProblem('Iron_Bar')).toBeNull();
+    expect(itemProblem('x'.repeat(201))).toBe('cs.item_invalid');
+    expect(itemProblem('a\u0007b')).toBe('cs.item_invalid');
+  });
+
+  it('finds the owner of an item, ignoring the case, and who else holds it', () => {
+    expect(ownerOf(c(), 'iron_bar')).toBe('Metal');
+    expect(ownerOf(c(), 'iron_bar', 'Metal')).toBeNull();
+    expect(ownerOf(c(), 'Nope')).toBeNull();
+  });
+
+  it('adds free items, and reports present, conflicting and invalid ones', () => {
+    const r = addItems(c(), 'Food', ['Cheese', 'apple', 'Iron_Bar', 'x'.repeat(201)]);
+    expect(r.cats['Food'].items).toEqual(['Apple', 'Bread', 'Cheese']);
+    expect(r.added).toEqual(['Cheese']);
+    expect(r.present).toEqual(['apple']);
+    expect(r.conflicts).toEqual([{ item: 'Iron_Bar', from: 'Metal' }]);
+    expect(r.invalid).toHaveLength(1);
+    expect(r.cats['Metal'].items).toEqual(['Iron_Bar']); // a conflict moves nothing by itself
+  });
+
+  it('moves a conflicting item: out of the other category, into this one', () => {
+    const r = addItems(c(), 'Food', ['iron_bar']);
+    const next = moveItems(r.cats, 'Food', r.conflicts);
+    expect(next['Metal'].items).toEqual([]);
+    expect(next['Food'].items).toEqual(['Apple', 'Bread', 'iron_bar']);
+    expect(duplicates(next)).toEqual([]);
+  });
+
+  it('removes one item from one category', () => {
+    expect(removeItem(c(), 'Food', 'Apple')['Food'].items).toEqual(['Bread']);
+    expect(c()['Food'].items).toEqual(['Apple', 'Bread']);
+  });
+
+  it('lists the items a loaded file already holds twice', () => {
+    const d: Cats = { A: { words: [], items: ['X', 'Y'] }, B: { words: [], items: ['x'] } };
+    expect(duplicates(d)).toEqual([{ item: 'X', cats: ['A', 'B'] }]);
+    expect(duplicates(c())).toEqual([]);
   });
 });

@@ -1,40 +1,57 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { Api } from '../../core/api';
+import { ItemPicker } from './item-picker';
+import { Catalog, iconOf, nameOf } from '../../core/catalog';
 import { Confirm } from '../../core/confirm';
 import { I18n, T } from '../../core/i18n';
 import { Session } from '../../core/session';
 import {
   addCategory,
+  addItems,
   Cats,
+  Conflict,
   csFailure,
   deleteCategory,
+  duplicates,
   filterItems,
   lines,
+  moveItems,
+  parseNames,
   Preview,
   previewText,
+  removeItem,
   renameCategory,
 } from './chestsort.logic';
 
+const SHOWN = 200; // chips drawn at once: a category may hold thousands of items
+
 /** The chestsort categories editor. The edited state lives in memory only. */
 @Component({
-  imports: [T],
+  imports: [T, ItemPicker],
   selector: 'app-chestsort',
   template: `
     <p role="status">{{ message() }}</p>
     <p role="alert" class="err pre">{{ error() }}</p>
     @if (stale()) {
       <p>
-        <button type="button" class="btn" (click)="load()">{{ 'cs.reload' | t }}</button>
+        <button type="button" (click)="load()">{{ 'cs.reload' | t }}</button>
       </p>
     }
-    <p>
-      <label for="cs-list">{{ 'cs.categories' | t }}</label><br />
-      <select id="cs-list" size="8" (change)="select($event)">
-        @for (n of names(); track n) {
-          <option [value]="n" [selected]="n === selected()">{{ n }}</option>
-        }
-      </select>
-    </p>
+    <p id="cs-cats-label" class="cs-label">{{ 'cs.categories' | t }}</p>
+    <ul class="cs-cats" aria-labelledby="cs-cats-label">
+      @for (n of names(); track n) {
+        <li>
+          <button
+            type="button"
+            class="cs-cat"
+            [attr.aria-pressed]="n === selected()"
+            (click)="choose(n)"
+          >
+            {{ n }}
+          </button>
+        </li>
+      }
+    </ul>
     @if (edit()) {
       <p class="row">
         <label for="cs-name">{{ 'cs.name' | t }}</label>
@@ -45,42 +62,151 @@ import {
           [value]="name()"
           (input)="name.set(val($event))"
         />
-        <button type="button" class="btn" (click)="add()">{{ 'cs.add' | t }}</button>
-        <button type="button" class="btn" (click)="rename()">{{ 'cs.rename' | t }}</button>
-        <button type="button" class="btn" (click)="remove()">{{ 'cs.delete' | t }}</button>
+        <button type="button" (click)="add()">{{ 'cs.add' | t }}</button>
+        <button type="button" (click)="rename()">{{ 'cs.rename' | t }}</button>
+        <button type="button" (click)="remove()">{{ 'cs.delete' | t }}</button>
       </p>
     }
-    <p>
-      <label for="cs-words">{{ 'cs.words' | t }}</label>
-      <output>{{ 'cs.words_n' | t: { n: wordCount() } }}</output><br />
-      <textarea
-        id="cs-words"
-        rows="5"
-        spellcheck="false"
-        [disabled]="selected() === null"
-        [readOnly]="!edit()"
-        [value]="wordsText()"
-        (input)="editWords($event)"
-      ></textarea>
-    </p>
-    <p>
-      <label for="cs-items">{{ 'cs.items' | t }}</label> <output>{{ itemsLabel() }}</output><br />
-      <label for="cs-filter">{{ 'cs.filter' | t }}</label>
-      <input type="search" id="cs-filter" [value]="filter()" (input)="setFilter($event)" /><br />
-      <textarea
-        id="cs-items"
-        rows="12"
-        spellcheck="false"
-        [disabled]="selected() === null"
-        [readOnly]="!edit() || filter().trim() !== ''"
-        [value]="itemsText()"
-        (input)="editItems($event)"
-      ></textarea>
+    <div class="cs-grid">
+      <div class="cs-main">
+        <p class="cs-words">
+          <label for="cs-words">{{ 'cs.words' | t }}</label>
+          <output>{{ 'cs.words_n' | t: { n: wordCount() } }}</output><br />
+          <textarea
+            id="cs-words"
+            rows="4"
+            spellcheck="false"
+            [disabled]="selected() === null"
+            [readOnly]="!edit()"
+            [value]="wordsText()"
+            (input)="editWords($event)"
+          ></textarea>
+        </p>
+        <h3>
+          {{ 'cs.items' | t }} <output>{{ itemsLabel() }}</output>
+        </h3>
+        @if (dupText()) {
+          <p role="alert" class="err">{{ dupText() }}</p>
+        }
+        <p>
+          <label for="cs-filter">{{ 'cs.filter' | t }}</label>
+          <input
+            type="search"
+            id="cs-filter"
+            [value]="filter()"
+            (input)="filter.set(val($event))"
+          />
+        </p>
+        @if (edit()) {
+          @if (catalog.rows().length) {
+            <p>
+              <button type="button" [disabled]="selected() === null" (click)="picking.set(true)">
+                {{ 'cs.pick_open' | t }}
+              </button>
+            </p>
+            <app-item-picker
+              [(open)]="picking"
+              [rows]="catalog.rows()"
+              [category]="selected() ?? ''"
+              [owners]="owners()"
+              (pick)="pickItem($event)"
+            />
+          } @else {
+            <p>
+              <label for="cs-add">{{ 'cs.item_label' | t }}</label><br />
+              <textarea
+                id="cs-add"
+                rows="2"
+                spellcheck="false"
+                [disabled]="selected() === null"
+                [value]="draft()"
+                (input)="draft.set(val($event))"
+                (keydown.enter)="enter($event)"
+              ></textarea>
+              <button type="button" [disabled]="selected() === null" (click)="addDraft()">
+                {{ 'cs.item_add' | t }}
+              </button>
+            </p>
+            <p class="hint">{{ 'cs.item_help' | t }}</p>
+            @if (known().length) {
+              <ul class="cs-suggest" [attr.aria-label]="'cs.known' | t">
+                @for (k of known(); track k.item) {
+                  <li>
+                    <button type="button" (click)="suggest(k.item)">
+                      @if (k.icon) {
+                        <img [src]="k.icon" alt="" width="20" height="20" />
+                      }
+                      {{ k.label }}
+                      @if (k.from) {
+                        · {{ k.from }}
+                      }
+                    </button>
+                  </li>
+                }
+              </ul>
+            }
+          }
+        }
+        <p role="status">{{ notice() }}</p>
+        @if (pending().length) {
+          <div class="cs-conflicts" role="group" [attr.aria-label]="'cs.move' | t">
+            @for (c of pending(); track c.item) {
+              <p>
+                {{ 'cs.conflict' | t: { item: c.item, from: c.from } }}
+                <button type="button" (click)="move([c])">{{ 'cs.move' | t }}</button>
+              </p>
+            }
+            @if (pending().length > 1) {
+              <button type="button" (click)="move(pending())">{{ 'cs.move_all' | t }}</button>
+            }
+            <button type="button" (click)="pending.set([])">{{ 'cs.skip' | t }}</button>
+          </div>
+        }
+        @if (shown().length) {
+          <ul class="cs-tiles" [attr.aria-label]="'cs.items' | t">
+            @for (i of shown(); track i) {
+              <li class="cs-tile">
+                @if (labels().get(i.toLowerCase()); as l) {
+                  @if (l.icon) {
+                    <img [src]="l.icon" alt="" width="36" height="36" />
+                  } @else {
+                    <span class="cs-noicon" aria-hidden="true"></span>
+                  }
+                  <span [attr.title]="i">{{ l.label }}</span>
+                } @else {
+                  <span class="cs-noicon" aria-hidden="true"></span>
+                  <span>{{ i }}</span>
+                }
+                @if (edit()) {
+                  <button
+                    type="button"
+                    class="cs-x"
+                    [attr.aria-label]="
+                      'cs.item_remove' | t: { name: labels().get(i.toLowerCase())?.label ?? i }
+                    "
+                    (click)="drop(i)"
+                  >
+                    ✕
+                  </button>
+                }
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="empty">{{ 'cs.item_none' | t }}</p>
+        }
+        @if (more() > 0) {
+          <p class="meta">{{ 'cs.item_more' | t: { n: more() } }}</p>
+        }
+      </div>
+    </div>
+    <p class="row">
+      <button type="button" (click)="download()">{{ 'cs.download' | t }}</button>
     </p>
     @if (edit()) {
       <p class="row">
-        <button type="button" class="btn" (click)="preview()">{{ 'cs.preview' | t }}</button>
-        <button type="button" class="btn primary" [disabled]="!previewed()" (click)="save()">
+        <button type="button" (click)="preview()">{{ 'cs.preview' | t }}</button>
+        <button type="button" class="primary" [disabled]="!previewed()" (click)="save()">
           {{ 'cs.save' | t }}
         </button>
       </p>
@@ -94,12 +220,7 @@ import {
             <option [value]="b">{{ b }}</option>
           }
         </select>
-        <button
-          type="button"
-          class="btn"
-          [disabled]="backups().length === 0"
-          (click)="restore(bak.value)"
-        >
+        <button type="button" [disabled]="backups().length === 0" (click)="restore(bak.value)">
           {{ 'cs.restore' | t }}
         </button>
       </p>
@@ -110,16 +231,21 @@ export class Chestsort {
   private readonly api = inject(Api);
   private readonly confirm = inject(Confirm);
   private readonly i18n = inject(I18n);
-  protected readonly edit = inject(Session).canAct;
+  private readonly session = inject(Session);
+  protected readonly catalog = inject(Catalog);
+  protected readonly picking = signal(false);
+  protected readonly edit = computed(() => this.session.canAct('chestsort'));
 
   protected readonly cats = signal<Cats>({});
   private hash = '';
   protected readonly selected = signal<string | null>(null);
   protected readonly name = signal('');
   protected readonly filter = signal('');
-  // the textareas keep what was typed: they are rewritten only when the selection or the filter changes
+  // the words box keeps what was typed: it is rewritten only when the selection changes
   protected readonly wordsText = signal('');
-  protected readonly itemsText = signal('');
+  protected readonly draft = signal('');
+  protected readonly notice = signal('');
+  protected readonly pending = signal<Conflict[]>([]);
   protected readonly previewed = signal(false);
   protected readonly diff = signal('');
   protected readonly message = signal('');
@@ -139,11 +265,66 @@ export class Chestsort {
     const q = this.filter().trim();
     const t = this.i18n.t;
     return q
-      ? t('cs.items_filtered', { shown: filterItems(this.current().items, q).length, n })
+      ? t('cs.items_filtered', {
+          shown: filterItems(this.current().items, q, this.shownName).length,
+          n,
+        })
       : t('cs.items_n', { n });
   });
 
+  private readonly matches = computed(() =>
+    filterItems(this.current().items, this.filter(), this.shownName),
+  );
+  protected readonly shown = computed(() => this.matches().slice(0, SHOWN));
+  protected readonly more = computed(() => this.matches().length - this.shown().length);
+  /** Without a catalogue: names already used in other categories that contain the draft. */
+  /** lower-case item name → the category holding it */
+  protected readonly owners = computed(() => {
+    const owners = new Map<string, string>();
+    for (const [n, c] of Object.entries(this.cats()))
+      for (const i of c.items) owners.set(i.toLowerCase(), n);
+    return owners;
+  });
+  /** Without a catalogue: names already used in other categories that contain the draft. */
+  protected readonly known = computed(() => {
+    const sel = this.selected();
+    const q = this.draft().trim().toLowerCase();
+    if (q.length < 2) return [];
+    const out: { item: string; label: string; icon: null; from: string }[] = [];
+    for (const [n, c] of Object.entries(this.cats()))
+      for (const i of n === sel ? [] : c.items) {
+        if (i.toLowerCase().includes(q)) out.push({ item: i, label: i, icon: null, from: n });
+        if (out.length >= 8) return out;
+      }
+    return out;
+  });
+  /** What the user reads for an item: its name in his language, else the internal name. */
+  private readonly shownName = (item: string): string =>
+    this.labels().get(item.toLowerCase())?.label ?? item;
+  /** Name and picture of an internal name, when the catalogue knows it. */
+  protected readonly labels = computed(() => {
+    const lang = this.i18n.lang();
+    return new Map(
+      this.catalog
+        .rows()
+        .map((r) => [r[0].toLowerCase(), { label: nameOf(r, lang), icon: iconOf(r) }]),
+    );
+  });
+  protected readonly dupText = computed(() => {
+    const d = duplicates(this.cats());
+    return d.length
+      ? this.i18n.t('cs.dups', {
+          list:
+            d
+              .slice(0, 5)
+              .map((e) => `${e.item} (${e.cats.join(', ')})`)
+              .join('; ') + (d.length > 5 ? ` +${d.length - 5}` : ''),
+        })
+      : '';
+  });
+
   constructor() {
+    void this.catalog.load();
     void this.load();
   }
 
@@ -191,16 +372,13 @@ export class Chestsort {
     this.name.set(this.selected() ?? '');
     this.wordsText.set(this.current().words.join('\n'));
     this.filter.set('');
-    this.itemsText.set(this.current().items.join('\n'));
+    this.draft.set('');
+    this.notice.set('');
+    this.pending.set([]);
   }
 
-  protected select(e: Event): void {
-    this.fill(this.val(e));
-  }
-
-  protected setFilter(e: Event): void {
-    this.filter.set(this.val(e));
-    this.itemsText.set(filterItems(this.current().items, this.filter()).join('\n'));
+  protected choose(name: string): void {
+    this.fill(name);
   }
 
   private patch(change: Partial<{ words: string[]; items: string[] }>): void {
@@ -214,8 +392,61 @@ export class Chestsort {
     if (this.edit()) this.patch({ words: lines(this.val(e)) });
   }
 
-  protected editItems(e: Event): void {
-    if (this.edit() && this.filter().trim() === '') this.patch({ items: lines(this.val(e)) });
+  /** Enter adds; Shift+Enter is a new line (several names at once). */
+  protected enter(e: Event): void {
+    if ((e as KeyboardEvent).shiftKey) return;
+    e.preventDefault();
+    this.addDraft();
+  }
+
+  protected suggest(item: string): void {
+    this.draft.set(item);
+    this.addDraft();
+  }
+
+  protected addDraft(): void {
+    const sel = this.selected();
+    if (!this.edit() || sel === null) return;
+    const names = parseNames(this.draft());
+    if (!names.length) return;
+    const r = addItems(this.cats(), sel, names);
+    const t = this.i18n.t;
+    const note: string[] = [];
+    if (r.added.length) {
+      this.cats.set(r.cats);
+      this.dirty();
+      note.push(t('cs.item_added', { names: r.added.join(', ') }));
+    }
+    if (r.present.length) note.push(t('cs.item_present', { names: r.present.join(', ') }));
+    if (r.invalid.length) note.push(t('cs.item_invalid'));
+    this.notice.set(note.join(' '));
+    this.pending.set(r.conflicts);
+    this.draft.set('');
+  }
+
+  /** A row of the picker: add the item, or move it here when another category holds it. */
+  protected pickItem(item: string): void {
+    const sel = this.selected();
+    const from = this.owners().get(item.toLowerCase());
+    if (!this.edit() || sel === null || from === sel) return;
+    if (from) this.cats.set(moveItems(this.cats(), sel, [{ item, from }]));
+    else this.cats.set(addItems(this.cats(), sel, [item]).cats);
+    this.dirty();
+  }
+
+  protected move(conflicts: Conflict[]): void {
+    const sel = this.selected();
+    if (!this.edit() || sel === null) return;
+    this.cats.set(moveItems(this.cats(), sel, conflicts));
+    this.pending.update((p) => p.filter((c) => !conflicts.includes(c)));
+    this.dirty();
+  }
+
+  protected drop(item: string): void {
+    const sel = this.selected();
+    if (!this.edit() || sel === null) return;
+    this.cats.set(removeItem(this.cats(), sel, item));
+    this.dirty();
   }
 
   protected add(): void {
@@ -250,6 +481,24 @@ export class Chestsort {
     this.cats.set(deleteCategory(this.cats(), sel));
     this.dirty();
     this.fill(null);
+  }
+
+  /** The file as a save would write it (the server keeps `_readme` and the other keys), saved by the browser. */
+  protected async download(): Promise<void> {
+    this.fail('');
+    try {
+      const r = await this.api.post<{ name: string; text: string }>('/chestsort/export', {
+        categories: this.cats(),
+      });
+      const url = URL.createObjectURL(new Blob([r.text], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = r.name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      this.fail(csFailure(err, this.i18n.t), err);
+    }
   }
 
   protected async preview(): Promise<void> {

@@ -1,218 +1,304 @@
-/* All CSS is global: a component style would be injected as an inline <style>, which the CSP forbids. */
-body {
-  margin: 0;
-}
-.top {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 1.5rem;
-  max-width: 60rem;
-  margin: 0 auto;
-  padding: 1rem 1rem 0;
-}
-.top h1 {
-  margin: 0;
-  margin-right: auto;
-  color: var(--gold);
-}
-nav {
-  display: flex;
-  gap: 1rem;
-}
-nav a {
-  font-family: var(--display-sc);
-  color: var(--muted);
-  text-decoration: none;
-  padding: 0.25rem 0;
-  border-bottom: 2px solid transparent;
-}
-nav a.on {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-.pill.state.up {
-  border-color: var(--ok);
-  color: var(--ok);
-}
-main {
-  max-width: 60rem;
-  margin: 0 auto;
-  padding: 1rem;
-}
-.err {
-  color: var(--bad);
-  margin: 0.25rem 0;
-}
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-.scroll {
-  overflow-x: auto;
-}
-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-th,
-td {
-  text-align: left;
-  padding: 0.35rem 0.6rem;
-  border-bottom: 1px solid var(--gold-dim);
-}
-th {
-  font-family: var(--display-sc);
-  color: var(--muted);
-  font-weight: normal;
-}
-dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.25rem 1rem;
-  margin: 0;
-}
-dt {
-  color: var(--muted);
-}
-dd {
-  margin: 0;
-}
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+/* Add-on styles. Every rule sits under [data-addon] addon-server / addon-chestsort (the wrapper the site
+   mounts them in): nothing here may reach the site. Colours and fonts are the site's tokens; buttons, fields,
+   details, .empty, .meta, .hint, .entries-table and .sr come from the site's workshop.css (docs/style-contract.md).
+   No hex, no inline style: scripts/check-scope.mjs. */
+[data-addon] addon-server,
+[data-addon] addon-chestsort {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
 
-/* collapsible sections */
-details.sec {
-  margin-block: 1rem;
-  padding: 0;
-}
-details.sec > summary {
-  font-family: var(--display-sc);
-  font-size: 1.15rem;
-  color: var(--gold);
-  padding: 0.75rem 1rem;
-  cursor: pointer;
-}
-details.sec[open] > summary {
-  color: var(--accent);
-}
-.sec-body {
-  padding: 0 1rem 1rem;
-}
+  & .err {
+    margin: 0.25rem 0;
+    color: var(--bad);
+  }
+  & .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  & .scroll {
+    overflow-x: auto;
+  }
+  & .pre {
+    white-space: pre-line;
+  }
+  & .power-bar {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    margin-bottom: 0.75rem;
+  }
+  & .power-bar p {
+    margin: 0.25rem 0 0;
+    text-align: right;
+  }
+  & button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  & button.primary {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
 
-dialog.plate {
-  color: var(--text);
-  background: var(--panel);
-  max-width: 28rem;
-}
-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
-}
+  /* collapsible sections: a bronze-edged plate with a small-caps title */
+  & details.sec {
+    margin-block: 1rem;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    background: linear-gradient(180deg, var(--panel), var(--panel-deep));
+  }
+  & details.sec > summary {
+    padding: 0.75rem 1rem;
+    color: var(--gold);
+    font: 400 1.15rem/1.2 var(--display-sc);
+  }
+  & details.sec[open] > summary {
+    color: var(--accent);
+  }
+  & .sec-body {
+    padding: 0 1rem 1rem;
+  }
+  & .sec-body h3 {
+    margin: 1.25rem 0 0.4rem;
+    color: var(--gold);
+    font: 400 1rem/1.2 var(--display-sc);
+  }
+  & .sec-body h4 {
+    margin: 1rem 0 0.25rem;
+    color: var(--muted);
+    font: 400 1rem/1.2 var(--display-sc);
+  }
+  & .sec-body ul,
+  & .sec-body ol {
+    margin: 0.4rem 0;
+    padding-left: 1.4rem;
+  }
+  & .sec-body li {
+    margin: 0.35rem 0;
+  }
 
-.pre {
-  white-space: pre-line;
-}
-textarea {
-  width: 100%;
-  font-family: var(--mono);
-}
-pre {
-  overflow: auto;
-  max-height: 24rem;
-  white-space: pre;
-  border: 1px solid var(--gold-dim);
-  border-radius: 3px;
-  padding: 0.5rem;
-}
-pre:empty {
-  display: none;
-}
-#cs-list {
-  min-width: 16rem;
-}
+  & dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 1rem;
+    margin: 0;
+  }
+  & dt {
+    color: var(--muted);
+  }
+  & dd {
+    margin: 0;
+  }
+  & code {
+    color: var(--gold);
+    font-family: var(--mono);
+    font-size: 0.9em;
+  }
+  & textarea {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--mono);
+  }
+  & textarea:focus {
+    border-color: var(--gold);
+  }
+  & pre {
+    max-height: 24rem;
+    overflow: auto;
+    padding: 0.5rem;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    white-space: pre;
+  }
+  & pre:empty {
+    display: none;
+  }
+  /* chestsort: the categories as a row of pills, the open one below: items as tiles, words on the side */
+  & .cs-label {
+    margin: 0 0 0.3rem;
+    color: var(--muted);
+  }
+  & .cs-cats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 0.75rem;
+    padding: 0;
+    list-style: none;
+  }
+  & .cs-cat {
+    padding: 3px 12px;
+    border-radius: 999px;
+  }
+  & .cs-cat[aria-pressed='true'] {
+    border-color: var(--accent);
+    background: var(--panel-deep);
+    color: var(--text);
+  }
+  & .cs-words {
+    max-width: 40rem;
+  }
+  & output {
+    margin-left: 0.5rem;
+    color: var(--muted);
+  }
+  & label + input {
+    margin-left: 0.5rem;
+  }
+  & .cs-main h3 {
+    margin: 1rem 0 0.4rem;
+  }
+  & #cs-add {
+    margin-bottom: 0.4rem;
+  }
+  & .cs-suggest {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0.5rem 0;
+    padding: 0;
+    list-style: none;
+  }
+  & .cs-suggest img {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    vertical-align: middle;
+  }
+  & .cs-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+    gap: 8px;
+    margin: 0.5rem 0;
+    padding: 0;
+    list-style: none;
+  }
+  & .cs-tile {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 4px 6px;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    background: var(--panel-deep);
+    font-size: 0.8rem;
+    line-height: 1.2;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  & .cs-tile img,
+  & .cs-noicon {
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
+  }
+  & .cs-noicon {
+    border: 1px dashed var(--gold-dim);
+    border-radius: 3px;
+  }
+  & .cs-tile .cs-x {
+    position: absolute;
+    top: 0;
+    right: 0;
+  }
+  & .cs-x {
+    padding: 0 6px;
+    border-color: transparent;
+    color: var(--muted);
+  }
+  & .cs-x:hover {
+    color: var(--bad);
+  }
+  & .cs-conflicts {
+    margin: 0.5rem 0;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+  }
+  & a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
 
-main a {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-main a:hover {
-  color: var(--accent-hover);
-}
-.sec-body h3 {
-  font-family: var(--display-sc);
-  color: var(--gold);
-  font-weight: normal;
-  margin: 1.25rem 0 0.4rem;
-}
-.sec-body h4 {
-  font-family: var(--display-sc);
-  color: var(--muted);
-  font-weight: normal;
-  margin: 1rem 0 0.25rem;
-}
-.sec-body ul,
-.sec-body ol {
-  margin: 0.4rem 0;
-  padding-left: 1.4rem;
-}
-.sec-body li {
-  margin: 0.35rem 0;
-}
-code {
-  font-family: var(--mono);
-  font-size: 0.9em;
-  color: var(--gold);
-}
+  /* the confirmation dialog: a plate over the page */
+  & dialog {
+    max-width: 28rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    background: linear-gradient(180deg, var(--panel), var(--panel-deep));
+    color: var(--text);
+  }
+  & dialog::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+  }
 
-/* the console look of the panel: figures as tiles, actions as one joined group */
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
-  gap: 0.75rem;
-}
-.tile {
-  margin: 0;
-  padding: 0.6rem 0.8rem;
-  border: 1px solid var(--gold-dim);
-  border-radius: 3px;
-  background: var(--panel-deep);
-}
-.tile .k {
-  color: var(--muted);
-  margin-right: 0.35rem;
-}
-.tile .v {
-  color: var(--text);
-  font-weight: bold;
-}
-.tile .v.up {
-  color: var(--ok);
-}
-.bar {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  margin-bottom: 0.75rem;
-}
-.bar p {
-  margin: 0.25rem 0 0;
-  text-align: right;
-}
-.btn-group {
-  display: inline-flex;
-}
-.btn-group .btn {
-  border-radius: 0;
-  margin-left: -1px;
-}
-.btn-group .btn:first-child {
-  border-radius: 3px 0 0 3px;
-  margin-left: 0;
-}
-.btn-group .btn:last-child {
-  border-radius: 0 3px 3px 0;
+  /* the item picker: a tall popup, one row per item */
+  & dialog.cs-pick[open] {
+    display: flex;
+    flex-direction: column;
+    width: min(36rem, 92vw);
+    max-width: none;
+    max-height: 85vh;
+    padding: 0;
+  }
+  & .cs-pick header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem 0;
+  }
+  & .cs-pick h2 {
+    margin: 0;
+  }
+  & .cs-pick label,
+  & .cs-pick input {
+    margin: 0.5rem 1rem 0;
+  }
+  & .cs-pick-list {
+    flex: 1;
+    min-height: 8rem;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+  & .cs-pick-list li {
+    display: grid;
+    grid-template-columns: 40px 1fr auto;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.4rem 1rem;
+    border-top: 1px solid var(--gold-dim);
+  }
+  & .cs-pick-list img,
+  & .cs-pick-noicon {
+    width: 40px;
+    height: 40px;
+    object-fit: contain;
+    background: var(--panel-deep);
+    border-radius: 3px;
+  }
+  & .cs-pick-name small {
+    display: block;
+    color: var(--muted);
+  }
+  & .cs-pick footer {
+    padding: 0.5rem 1rem;
+    border-top: 1px solid var(--gold-dim);
+    color: var(--muted);
+    text-align: center;
+  }
 }

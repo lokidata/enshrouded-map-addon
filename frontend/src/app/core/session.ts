@@ -1,13 +1,14 @@
-import { Injectable, computed, inject, signal } from '@angular/core';
+import { Injectable, inject, signal } from '@angular/core';
 import { Api } from './api';
 import { I18n } from './i18n';
 import { failure } from './reasons';
 
 export type Level = 'read' | 'action' | null;
+export type AddonId = 'server' | 'chestsort';
 export interface Me {
   username: string;
   is_admin: boolean;
-  level: Level;
+  levels: Record<AddonId, Level>;
   backup_filtered: boolean;
   chestsort: boolean;
 }
@@ -20,8 +21,15 @@ export class Session {
   readonly me = signal<Me | null>(null);
   readonly error = signal('');
   readonly loaded = signal(false);
-  readonly hasAccess = computed(() => this.me()?.level != null);
-  readonly canAct = computed(() => this.me()?.level === 'action');
+
+  /** Each add-on has its own access list: a level on one gives nothing on the other. */
+  hasAccess(addon: AddonId): boolean {
+    return this.me()?.levels[addon] != null;
+  }
+
+  canAct(addon: AddonId): boolean {
+    return this.me()?.levels[addon] === 'action';
+  }
 
   async load(): Promise<void> {
     try {

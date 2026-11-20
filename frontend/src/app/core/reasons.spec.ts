@@ -30,38 +30,38 @@ describe('failure', () => {
     ['backup_not_ready', "Cette sauvegarde n'est pas terminée ou a échoué."],
   ])('%s (fr)', (detail, text) => {
     const i = TestBed.inject(I18n);
-    i.set('fr');
+    i.setLang('fr');
     expect(failure(err(409, detail), i.t)).toBe(text);
   });
 
   it('every reason has a text in both languages', () => {
     const i = TestBed.inject(I18n);
     for (const lang of ['fr', 'en'] as const) {
-      i.set(lang);
+      i.setLang(lang);
       for (const c of codes) expect(failure(err(409, c), i.t)).toBe(i.t(`err.${c}` as Key));
     }
   });
 
   it('429 says how long to wait, or says so vaguely', () => {
     const i = TestBed.inject(I18n);
-    i.set('fr');
+    i.setLang('fr');
     expect(failure(err(429, 'rate_limited', 30), i.t)).toBe(
       'Trop rapproché : réessayez dans 30 s.',
     );
     expect(failure(err(429), i.t)).toBe('Trop rapproché : réessayez dans quelques secondes.');
-    i.set('en');
+    i.setLang('en');
     expect(failure(err(429, 'rate_limited', 30), i.t)).toBe('Too fast: try again in 30 s.');
   });
 
   it('falls back on the status', () => {
     const i = TestBed.inject(I18n);
-    i.set('fr');
+    i.setLang('fr');
     expect(failure(err(401), i.t)).toBe("Connectez-vous d'abord sur le site.");
     expect(failure(err(503), i.t)).toBe('Le site est injoignable.');
     expect(failure(err(502), i.t)).toBe('Le panneau du serveur est injoignable.');
     expect(failure(err(500), i.t)).toBe('Erreur inattendue (500).');
     expect(failure(new TypeError('network'), i.t)).toBe('Erreur inattendue.');
-    i.set('en');
+    i.setLang('en');
     expect(failure(err(401), i.t)).toBe('Log in on the site first.');
   });
 });

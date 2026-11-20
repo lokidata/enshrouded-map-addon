@@ -82,7 +82,7 @@ describe('Mods', () => {
 
   it('has the same explanation in English', () => {
     const { fx, el } = setup({ me: me({ chestsort: true }) });
-    TestBed.inject(I18n).set('en');
+    TestBed.inject(I18n).setLang('en');
     fx.detectChanges();
     const text = el.textContent ?? '';
     for (const part of [

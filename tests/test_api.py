@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import posixpath
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -177,15 +178,15 @@ def as_(who: str, extra: dict[str, str] | None = None) -> dict[str, str]:
     return {"Cookie": f"session={who}", **(extra or {})}
 
 
-def grant(client: TestClient, key: str, level: str | None) -> httpx.Response:
+def grant(client: TestClient, key: str, level: str | None, addon: str = "server") -> httpx.Response:
     resp: httpx.Response = client.put(
-        f"/addon/api/access/{key}", json={"level": level}, headers=as_("admin", WRITE)
+        f"/addon/api/{addon}/access/{key}", json={"level": level}, headers=as_("admin", WRITE)
     )
     return resp
 
 
 def test_no_cookie_is_401(client: TestClient) -> None:
-    for path in ("/me", "/status", "/journal", "/access"):
+    for path in ("/me", "/status", "/journal", "/server/access"):
         assert client.get(f"/addon/api{path}").status_code == 401
 
 
@@ -198,7 +199,7 @@ def test_unknown_user_has_no_level_and_no_status(client: TestClient, fake: Fake)
     assert me.json() == {
         "username": "alice",
         "is_admin": False,
-        "level": None,
+        "levels": {"server": None, "chestsort": None},
         "backup_filtered": True,
         "chestsort": False,
     }
@@ -209,7 +210,7 @@ def test_unknown_user_has_no_level_and_no_status(client: TestClient, fake: Fake)
 
 def test_read_user_sees_status_but_cannot_manage(client: TestClient) -> None:
     assert grant(client, ALICE_KEY, "read").status_code == 200
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["level"] == "read"
+    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] == "read"
     status = client.get("/addon/api/status", headers=as_("alice"))
     assert status.status_code == 200
     assert status.json() == {
@@ -221,10 +222,10 @@ def test_read_user_sees_status_but_cannot_manage(client: TestClient) -> None:
         "uptime_ms": 4,
     }
     put = client.put(
-        f"/addon/api/access/{BOB_KEY}", json={"level": "read"}, headers=as_("alice", WRITE)
+        f"/addon/api/server/access/{BOB_KEY}", json={"level": "read"}, headers=as_("alice", WRITE)
     )
     assert put.status_code == 403
-    assert client.get("/addon/api/access", headers=as_("alice")).status_code == 403
+    assert client.get("/addon/api/server/access", headers=as_("alice")).status_code == 403
 
 
 def test_read_user_journal_has_only_public_fields(client: TestClient) -> None:
@@ -239,11 +240,11 @@ def test_admin_has_action_and_everything(client: TestClient) -> None:
     assert me == {
         "username": "root",
         "is_admin": True,
-        "level": "action",
+        "levels": {"server": "action", "chestsort": "action"},
         "backup_filtered": True,
         "chestsort": False,
     }
-    for path in ("/status", "/journal", "/access"):
+    for path in ("/status", "/journal", "/server/access"):
         assert client.get(f"/addon/api{path}", headers=as_("admin")).status_code == 200
 
 
@@ -251,7 +252,7 @@ def test_access_lists_site_users_with_levels_and_relays_cookie(
     client: TestClient, fake: Fake
 ) -> None:
     grant(client, ALICE_KEY, "action")
-    rows = client.get("/addon/api/access", headers=as_("admin")).json()
+    rows = client.get("/addon/api/server/access", headers=as_("admin")).json()
     assert rows == [
         {"user_key": ALICE_KEY, "username": "alice", "level": "action"},
         {"user_key": BOB_KEY, "username": "bob", "level": None},
@@ -262,23 +263,23 @@ def test_access_lists_site_users_with_levels_and_relays_cookie(
 def test_null_level_revokes(client: TestClient) -> None:
     grant(client, ALICE_KEY, "read")
     assert grant(client, ALICE_KEY, None).status_code == 200
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["level"] is None
+    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
 
 
 def test_write_without_x_addon_is_403(client: TestClient) -> None:
     put = client.put(
-        f"/addon/api/access/{ALICE_KEY}",
+        f"/addon/api/server/access/{ALICE_KEY}",
         json={"level": "read"},
         headers=as_("admin", {"Origin": "https://site.example.test"}),
     )
     assert put.status_code == 403
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["level"] is None
+    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
 
 
 def test_write_with_wrong_or_missing_origin_is_403(client: TestClient) -> None:
     for origin in ({"Origin": "https://evil.example.test"}, {}):
         put = client.put(
-            f"/addon/api/access/{ALICE_KEY}",
+            f"/addon/api/server/access/{ALICE_KEY}",
             json={"level": "read"},
             headers=as_("admin", {"X-Addon": "1", **origin}),
         )
@@ -309,7 +310,7 @@ def test_status_polls_are_not_journalled_but_access_changes_are(client: TestClie
     client.get("/addon/api/status", headers=as_("admin"))
     rows = client.get("/addon/api/journal", headers=as_("admin")).json()
     assert [(r["username"], r["action"], r["target"], r["result"]) for r in rows] == [
-        ("root", "access", "alice", "read"),
+        ("root", "access", "server:alice", "read"),
     ]
 
 
@@ -326,24 +327,28 @@ def test_other_admin_missing_from_site_list_is_404(client: TestClient, fake: Fak
     fake.sessions["admin2"] = {**ADMIN, "id": 2, "username": "root2"}
     key = "2:2026-01-01T00:00:00"
     assert grant(client, key, "read").status_code == 404
-    assert client.get("/addon/api/me", headers=as_("admin2")).json()["level"] == "action"
+    assert client.get("/addon/api/me", headers=as_("admin2")).json()["levels"]["server"] == "action"
 
 
 def test_access_prunes_users_missing_from_site_and_journals(client: TestClient, fake: Fake) -> None:
     grant(client, ALICE_KEY, "read")
     fake.users = [BOB]
-    rows = client.get("/addon/api/access", headers=as_("admin")).json()
+    rows = client.get("/addon/api/server/access", headers=as_("admin")).json()
     assert [r["username"] for r in rows] == ["bob"]
     fake.users = [ALICE, BOB]
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["level"] is None
+    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
     first = client.get("/addon/api/journal", headers=as_("admin")).json()[0]
-    assert (first["action"], first["target"], first["result"]) == ("access", "alice", "removed")
+    assert (first["action"], first["target"], first["result"]) == (
+        "access",
+        "server:alice",
+        "removed",
+    )
 
 
 def test_recreated_account_with_same_id_has_no_level(client: TestClient, fake: Fake) -> None:
     grant(client, ALICE_KEY, "read")
     fake.sessions["alice"] = {**ALICE, "created_at": "2026-05-05T00:00:00"}
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["level"] is None
+    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
     assert client.get("/addon/api/status", headers=as_("alice")).status_code == 403
 
 
@@ -374,7 +379,7 @@ def test_key_never_in_responses_or_logs(
     for status in (200, 403, 404, 500):
         fake.pelican_status = status
         bodies.append(client.get("/addon/api/status", headers=as_("admin")).text)
-    for path in ("/me", "/journal", "/access"):
+    for path in ("/me", "/journal", "/server/access"):
         bodies.append(client.get(f"/addon/api{path}", headers=as_("admin")).text)
     assert all(KEY not in b for b in bodies)
     assert all(KEY not in r.getMessage() and KEY not in str(r.args) for r in caplog.records)
@@ -383,7 +388,7 @@ def test_key_never_in_responses_or_logs(
 def test_site_users_without_created_at_is_503(client: TestClient, fake: Fake) -> None:
     for created in (None, ""):
         fake.users = [{"id": 7, "username": "alice", "created_at": created}]
-        assert client.get("/addon/api/access", headers=as_("admin")).status_code == 503
+        assert client.get("/addon/api/server/access", headers=as_("admin")).status_code == 503
         assert grant(client, f"7:{created}", "read").status_code == 503
 
 
@@ -821,7 +826,7 @@ def test_me_tells_chestsort_is_on(cs: TestClient) -> None:
 
 
 def test_reader_sees_the_file(cs: TestClient, fake: Fake) -> None:
-    grant(cs, ALICE_KEY, "read")
+    grant(cs, ALICE_KEY, "read", "chestsort")
     resp = cs.get("/addon/api/chestsort", headers=as_("alice"))
     assert resp.json() == {
         "categories": CS_OBJ["categories"],
@@ -849,7 +854,7 @@ def test_unreadable_file_is_502(cs: TestClient, fake: Fake) -> None:
 
 
 def test_read_and_unlisted_users_cannot_write_chestsort(cs: TestClient, fake: Fake) -> None:
-    grant(cs, ALICE_KEY, "read")
+    grant(cs, ALICE_KEY, "read", "chestsort")
     for who in ("alice", "bob"):
         assert save(cs, who).status_code == 403
         assert post(cs, "/chestsort/preview", who, json={"categories": NEW_CATS}).status_code == 403
@@ -860,7 +865,7 @@ def test_read_and_unlisted_users_cannot_write_chestsort(cs: TestClient, fake: Fa
 
 
 def test_preview_shows_diff_and_writes_nothing(cs: TestClient, fake: Fake) -> None:
-    grant(cs, ALICE_KEY, "action")
+    grant(cs, ALICE_KEY, "action", "chestsort")
     resp = post(cs, "/chestsort/preview", "alice", json={"categories": NEW_CATS})
     body = resp.json()
     assert (body["errors"], body["changed"]) == ([], True)
@@ -869,6 +874,26 @@ def test_preview_shows_diff_and_writes_nothing(cs: TestClient, fake: Fake) -> No
     same = post(cs, "/chestsort/preview", json={"categories": CS_OBJ["categories"]}).json()
     assert (same["changed"], same["diff"]) == (False, [])
     assert fake.writes() == [] and actions(cs) == []  # a preview is not journalled
+
+
+def test_export_returns_the_file_a_save_would_write(cs: TestClient, fake: Fake) -> None:
+    grant(
+        cs, ALICE_KEY, "read", "chestsort"
+    )  # a reader may download; nothing is written or journalled
+    resp = post(cs, "/chestsort/export", "alice", json={"categories": NEW_CATS})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == posixpath.basename(CS)
+    assert json.loads(body["text"])["categories"] == NEW_CATS
+    assert json.loads(body["text"]).get("_readme") == CS_OBJ.get("_readme")  # other keys are kept
+    assert post(cs, "/chestsort/export", "bob", json={"categories": NEW_CATS}).status_code == 403
+    dup = {"A": {"words": [], "items": ["Iron_Bar"]}, "B": {"words": [], "items": ["iron_bar"]}}
+    refused = post(cs, "/chestsort/export", "alice", json={"categories": dup})
+    assert (refused.status_code, refused.json()["detail"]) == (422, "invalid_content")
+    assert (
+        "iron_bar" in refused.json()["errors"][0].lower()
+    )  # nothing to download while it has errors
+    assert fake.writes() == [] and actions(cs) == []
 
 
 def test_preview_reports_errors_and_warnings(cs: TestClient) -> None:
@@ -1097,7 +1122,7 @@ def test_two_concurrent_saves_make_one_write_sequence(cs: TestClient, fake: Fake
 
 
 def test_backups_lists_the_20_newest_bak_files_only(cs: TestClient, fake: Fake) -> None:
-    grant(cs, ALICE_KEY, "read")
+    grant(cs, ALICE_KEY, "read", "chestsort")
     for day in range(1, 26):
         fake.files[f"{CS}.bak-202601{day:02d}-000000"] = "{}"
     fake.files["/other.json.bak-20260101-000000"] = "{}"
@@ -1380,3 +1405,53 @@ def test_download_url_never_in_logs(client: TestClient, caplog: pytest.LogCaptur
     caplog.set_level("DEBUG")
     dl(client)
     assert "SECRET_TOKEN" not in caplog.text
+
+
+def test_chestsort_only_user_gets_403_on_status_and_journal(cs: TestClient) -> None:
+    grant(cs, ALICE_KEY, "action", "chestsort")
+    for path in ("/status", "/journal", "/backups"):
+        assert cs.get(f"/addon/api{path}", headers=as_("alice")).status_code == 403
+    assert cs.get("/addon/api/chestsort", headers=as_("alice")).status_code != 403
+
+
+def test_server_only_user_gets_403_on_chestsort(cs: TestClient) -> None:
+    grant(cs, ALICE_KEY, "action", "server")
+    assert cs.get("/addon/api/chestsort", headers=as_("alice")).status_code == 403
+    assert cs.get("/addon/api/chestsort/backups", headers=as_("alice")).status_code == 403
+    assert cs.get("/addon/api/status", headers=as_("alice")).status_code == 200
+
+
+def test_access_routes_are_separate_lists(cs: TestClient) -> None:
+    grant(cs, ALICE_KEY, "read", "server")
+    grant(cs, BOB_KEY, "action", "chestsort")
+    srv = {
+        r["username"]: r["level"]
+        for r in cs.get("/addon/api/server/access", headers=as_("admin")).json()
+    }
+    chs = {
+        r["username"]: r["level"]
+        for r in cs.get("/addon/api/chestsort/access", headers=as_("admin")).json()
+    }
+    assert srv == {"alice": "read", "bob": None}
+    assert chs == {"alice": None, "bob": "action"}
+
+
+def test_unknown_addon_is_404(client: TestClient) -> None:
+    assert client.get("/addon/api/nope/access", headers=as_("admin")).status_code == 404
+    # chestsort is disabled on the plain client fixture
+    assert client.get("/addon/api/chestsort/access", headers=as_("admin")).status_code == 404
+    assert grant(client, ALICE_KEY, "read", "chestsort").status_code == 404
+
+
+def test_access_journal_target_names_the_addon(client: TestClient) -> None:
+    grant(client, ALICE_KEY, "read")
+    rows = client.get("/addon/api/journal", headers=as_("admin")).json()
+    assert any(r["action"] == "access" and r["target"] == "server:alice" for r in rows)
+
+
+def test_me_levels(cs: TestClient) -> None:
+    grant(cs, ALICE_KEY, "read", "server")
+    grant(cs, ALICE_KEY, "action", "chestsort")
+    me = cs.get("/addon/api/me", headers=as_("alice")).json()
+    assert me["levels"] == {"server": "read", "chestsort": "action"}
+    assert "level" not in me

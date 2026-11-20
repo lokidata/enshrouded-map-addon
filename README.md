@@ -18,7 +18,10 @@ make check   # ruff, mypy, bandit, pip-audit, pytest
 make check-frontend   # npm audit, lint (+ design guard), build, Vitest, Playwright + AXE
 make lock    # regenerate requirements.lock after a dependency change
 ```
-The UI is an Angular app in `frontend/` (Node 24 to build; `cd frontend && npm ci --ignore-scripts && npm run build`, then run the API with `STATIC_DIR` unset: it serves `frontend/dist/browser`). Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack in `deploy/`.
+## How it plugs into the site
+The screens are two custom elements (`addon-server`, `addon-chestsort`) that the site mounts in its own layout: the site reads `GET /addon/api/manifest` (filtered by the account's access, contract in `contract/manifest.schema.json`), adds one tab per add-on and loads `main.js` + `styles.css` from `/addon/`. Each add-on has its own access list, managed by the site administrator in the site's Administration dialog (one tab per add-on). `GET /addon/` redirects to `/#addon/server`. Deploy the add-on and the site together, then grant access again (the lists start empty).
+
+The UI is an Angular app in `frontend/` (Node 24 to build; `cd frontend && npm ci --ignore-scripts && npm run build`, then run the API with `STATIC_DIR` unset: it serves `frontend/dist/browser`; a bare element needs the site's tokens and `workshop.css` to look right, so try it through the site). Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack in `deploy/`.
 
 ## Security notes
 - Pelican failures are logged with their reason (and the refused IP address when Pelican says it); the key is read from the environment only, never logged or returned; the browser never calls Pelican.

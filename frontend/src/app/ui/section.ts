@@ -4,7 +4,7 @@ import { Component, OnInit, computed, input, signal } from '@angular/core';
 @Component({
   selector: 'app-section',
   template: `
-    <details class="sec plate" [open]="isOpen()" (toggle)="onToggle($event)">
+    <details class="sec" [open]="isOpen()" (toggle)="onToggle($event)">
       <summary>{{ heading() }}</summary>
       <div class="sec-body"><ng-content /></div>
     </details>

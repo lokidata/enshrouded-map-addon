@@ -49,6 +49,12 @@ export class Status {
     document.addEventListener('visibilitychange', this.onVisible);
   }
 
+  /** Off: no polling (the screen is hidden); on: a read now, then the poll again. */
+  setActive(on: boolean): void {
+    if (on) this.start();
+    else this.stop();
+  }
+
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;

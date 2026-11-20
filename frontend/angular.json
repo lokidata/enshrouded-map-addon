@@ -16,20 +16,14 @@
         "build": {
           "builder": "@angular/build:application",
           "options": {
-            "browser": "src/main.ts",
+            "browser": "src/elements.ts",
             "tsConfig": "tsconfig.app.json",
-            "assets": [
-              {
-                "glob": "**/*",
-                "input": "public"
-              }
-            ],
+            "assets": [],
             "styles": [
-              "src/ds/codex.css",
               "src/styles.css"
             ],
             "outputPath": "dist",
-            "baseHref": "/addon/"
+            "index": false
           },
           "configurations": {
             "production": {
@@ -45,7 +39,7 @@
                   "maximumError": "8kB"
                 }
               ],
-              "outputHashing": "all",
+              "outputHashing": "media",
               "optimization": {
                 "scripts": true,
                 "styles": {

@@ -15,14 +15,14 @@ import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.types import Scope
 
 from addon import chestsort
 from addon.config import Settings, get_settings
 from addon.identity import Identity, SiteUnavailable, Unauthenticated, who_am_i
 from addon.jsonsafe import safe_loads
+from addon.manifest import build_manifest
 from addon.pelican import (
     PelicanBadContent,
     PelicanClient,
@@ -31,7 +31,7 @@ from addon.pelican import (
     PelicanRejected,
     PelicanUnavailable,
 )
-from addon.store import Level, Store
+from addon.store import Addon, Level, Store
 from addon.throttle import Throttle
 
 log = logging.getLogger("addon.api")
@@ -108,14 +108,33 @@ async def current(request: Request) -> Identity:
 Current = Annotated[Identity, Depends(current)]
 
 
-def level_of(request: Request, who: Identity) -> Level | None:
-    return "action" if who.is_admin else request.app.state.store.level_of(who.key)
+ADDONS: tuple[Addon, ...] = ("server", "chestsort")
 
 
-def require_read(request: Request, who: Current) -> Identity:
-    if level_of(request, who) is None:
-        raise HTTPException(403, "forbidden")
-    return who
+def level_of(request: Request, who: Identity, addon: Addon) -> Level | None:
+    return "action" if who.is_admin else request.app.state.store.level_of(addon, who.key)
+
+
+def enabled(request: Request, addon: Addon) -> bool:
+    return addon == "server" or request.app.state.settings.chestsort_file is not None
+
+
+def reader(addon: Addon) -> Callable[..., Identity]:
+    def require_read(request: Request, who: Current) -> Identity:
+        if level_of(request, who, addon) is None:
+            raise HTTPException(403, "forbidden")
+        return who
+
+    return require_read
+
+
+def actor(addon: Addon) -> Callable[..., Identity]:
+    def require_action(request: Request, who: Current) -> Identity:
+        if level_of(request, who, addon) != "action":
+            raise HTTPException(403, "forbidden")
+        return who
+
+    return require_action
 
 
 def require_admin(who: Current) -> Identity:
@@ -124,14 +143,16 @@ def require_admin(who: Current) -> Identity:
     return who
 
 
-def require_action(request: Request, who: Current) -> Identity:
-    if level_of(request, who) != "action":
-        raise HTTPException(403, "forbidden")
-    return who
+def known_addon(request: Request, addon: str) -> Addon:
+    if addon not in ADDONS or not enabled(request, addon):
+        raise HTTPException(404, "unknown_addon")
+    return addon
 
 
-Reader = Annotated[Identity, Depends(require_read)]
-Actor = Annotated[Identity, Depends(require_action)]
+Reader = Annotated[Identity, Depends(reader("server"))]  # the Server add-on
+Actor = Annotated[Identity, Depends(actor("server"))]
+ChestReader = Annotated[Identity, Depends(reader("chestsort"))]
+ChestActor = Annotated[Identity, Depends(actor("chestsort"))]
 Admin = Annotated[Identity, Depends(require_admin)]
 router = APIRouter(prefix="/addon/api", dependencies=[Depends(check_write)])
 
@@ -162,10 +183,24 @@ def me(request: Request, who: Current) -> dict[str, Any]:
     return {
         "username": who.username,
         "is_admin": who.is_admin,
-        "level": level_of(request, who),
+        "levels": {a: level_of(request, who, a) for a in ADDONS},
         "backup_filtered": bool(request.app.state.settings.backup_ignored),
         "chestsort": request.app.state.settings.chestsort_file is not None,
     }
+
+
+def static_folder(cfg: Settings) -> Path:
+    default = Path(__file__).resolve().parents[2] / "frontend" / "dist" / "browser"
+    return Path(cfg.static_dir) if cfg.static_dir else default
+
+
+@router.get("/manifest")
+def manifest(request: Request, who: Current) -> JSONResponse:
+    cfg: Settings = request.app.state.settings
+    levels: dict[str, Level | None] = {a: level_of(request, who, a) for a in ADDONS}
+    return JSONResponse(
+        build_manifest(levels, cfg, static_folder(cfg)), headers={"Cache-Control": "no-cache"}
+    )
 
 
 @router.get("/status")
@@ -187,21 +222,23 @@ def journal(request: Request, who: Reader) -> list[dict[str, Any]]:
     return [{k: r[k] for k in PUBLIC_JOURNAL} for r in rows]
 
 
-@router.get("/access")
-async def list_access(request: Request, who: Admin) -> list[dict[str, Any]]:
+@router.get("/{addon}/access")
+async def list_access(request: Request, addon: str, who: Admin) -> list[dict[str, Any]]:
+    name = known_addon(request, addon)
     store: Store = request.app.state.store
     users = await site_users(request)
-    names = {r.user_key: r.username for r in store.list_access()}
-    for key in store.prune_missing(set(users)):
-        store.log(who.username, "access", names[key], "removed")
-    levels = {r.user_key: r.level for r in store.list_access()}
+    names = {r.user_key: r.username for r in store.list_access(name)}
+    for key in store.prune_missing(name, set(users)):
+        store.log(who.username, "access", f"{name}:{names[key]}", "removed")
+    levels = {r.user_key: r.level for r in store.list_access(name)}
     return [{"user_key": k, "username": n, "level": levels.get(k)} for k, n in users.items()]
 
 
-@router.put("/access/{user_key}")
+@router.put("/{addon}/access/{user_key}")
 async def set_access(
-    request: Request, user_key: str, body: AccessBody, who: Admin
+    request: Request, addon: str, user_key: str, body: AccessBody, who: Admin
 ) -> dict[str, Any]:
+    name = known_addon(request, addon)
     if user_key == who.key:
         raise HTTPException(400, "administrator_is_implicit")
     username = (await site_users(request)).get(user_key)
@@ -209,10 +246,10 @@ async def set_access(
         raise HTTPException(404, "unknown_user")
     store: Store = request.app.state.store
     if body.level is None:
-        store.revoke(user_key)
+        store.revoke(name, user_key)
     else:
-        store.grant(user_key, username, body.level, who.username)
-    store.log(who.username, "access", username, body.level or "revoked")
+        store.grant(name, user_key, username, body.level, who.username)
+    store.log(who.username, "access", f"{name}:{username}", body.level or "revoked")
     return {"user_key": user_key, "username": username, "level": body.level}
 
 
@@ -550,7 +587,7 @@ async def chestsort_locked(
 
 
 @router.get("/chestsort")
-async def chestsort_view(request: Request, path: ChestPath, who: Reader) -> dict[str, Any]:
+async def chestsort_view(request: Request, path: ChestPath, who: ChestReader) -> dict[str, Any]:
     text, obj = await current_file(request, path)
     return {
         "categories": obj.get("categories"),
@@ -562,7 +599,7 @@ async def chestsort_view(request: Request, path: ChestPath, who: Reader) -> dict
 
 @router.post("/chestsort/preview", response_model=None)
 async def chestsort_preview(
-    request: Request, path: ChestPath, who: Actor
+    request: Request, path: ChestPath, who: ChestActor
 ) -> dict[str, Any] | JSONResponse:
     # not journalled; no lock (it writes nothing), but one per second for everyone
     throttle: Throttle = request.app.state.throttle
@@ -592,9 +629,27 @@ async def chestsort_preview(
     }
 
 
+@router.post("/chestsort/export", response_model=None)
+async def chestsort_export(
+    request: Request, path: ChestPath, who: ChestReader
+) -> dict[str, str] | JSONResponse:
+    """The file a save would write (`_readme` and other keys kept), to download; 422 on errors."""
+    try:
+        body = await read_json(request, PreviewBody)
+    except Refused as r:
+        raise HTTPException(r.code, r.reason) from None
+    if errors := check_categories(body.categories).errors:
+        return JSONResponse({"detail": "invalid_content", "errors": errors}, status_code=422)
+    _, obj = await current_file(request, path)
+    data = chestsort.dump({**obj, "categories": body.categories}).encode(errors="replace")
+    if len(data) > MAX_BYTES:
+        raise HTTPException(413, "too_large")
+    return {"name": posixpath.basename(path) or "chestsort_categories.json", "text": data.decode()}
+
+
 @router.put("/chestsort", response_model=None)
 async def chestsort_save(
-    request: Request, path: ChestPath, who: Actor
+    request: Request, path: ChestPath, who: ChestActor
 ) -> dict[str, Any] | JSONResponse:
     async def run() -> dict[str, Any]:
         body: SaveBody = await read_json(request, SaveBody)
@@ -622,7 +677,7 @@ async def chestsort_save(
 
 
 @router.get("/chestsort/backups")
-async def chestsort_backups(request: Request, path: ChestPath, who: Reader) -> list[str]:
+async def chestsort_backups(request: Request, path: ChestPath, who: ChestReader) -> list[str]:
     folder, base = posixpath.split(path)
     try:
         names = await request.app.state.pelican.list_files(folder)
@@ -636,7 +691,7 @@ async def chestsort_backups(request: Request, path: ChestPath, who: Reader) -> l
 
 @router.post("/chestsort/restore", response_model=None)
 async def chestsort_restore(
-    request: Request, path: ChestPath, who: Actor
+    request: Request, path: ChestPath, who: ChestActor
 ) -> dict[str, Any] | JSONResponse:
     folder, base = posixpath.split(path)
     pelican: PelicanClient = request.app.state.pelican
@@ -677,23 +732,18 @@ class Page(StaticFiles):
         resp = await super().get_response(path, scope)
         resp.headers["Content-Security-Policy"] = CSP
         resp.headers["X-Content-Type-Options"] = "nosniff"
+        if path.endswith((".js", ".css")):
+            resp.headers["Cache-Control"] = (
+                "no-cache"  # revalidated by ETag: a new build shows at once
+            )
         return resp
 
 
-class SpaFiles(Page):
-    """Serves the built app; a path with no file extension (a route) gets index.html."""
+class Files(Page):
+    """The built elements (`main.js`, `styles.css`); no UI folder is a plain 404, not a crash."""
 
     async def check_config(self) -> None:
-        """A missing UI folder (tests, API-only dev) is a plain 404, not a crash."""
-
-    async def get_response(self, path: str, scope: Scope) -> Response:
-        try:
-            return await super().get_response(path, scope)
-        except StarletteHTTPException as exc:
-            last = path.rsplit("/", 1)[-1]
-            if exc.status_code != 404 or "." in last or path.startswith("api/"):
-                raise
-            return await super().get_response("index.html", scope)
+        pass
 
 
 def create_app(
@@ -713,9 +763,14 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(router)
+
+    @app.get("/addon/", include_in_schema=False)
+    def old_entry() -> RedirectResponse:
+        """The screens now live in the site: an old bookmark lands on the Server tab."""
+        return RedirectResponse("/#addon/server")
+
     cfg = settings or get_settings()
     # the built UI; a missing folder (tests, dev API only) is not an error, every page is a 404
-    default = Path(__file__).resolve().parents[2] / "frontend" / "dist" / "browser"
-    folder = Path(cfg.static_dir) if cfg.static_dir else default
-    app.mount("/addon", SpaFiles(directory=folder, html=True, check_dir=False))
+    folder = static_folder(cfg)
+    app.mount("/addon", Files(directory=folder, check_dir=False))
     return app
