@@ -1,28 +1,36 @@
-import { Component, inject } from '@angular/core';
+import { Component, effect, inject, input } from '@angular/core';
 import { I18n, T } from '../core/i18n';
 import { Session } from '../core/session';
+import { ConfirmDialog } from '../ui/confirm-dialog';
 import { Section } from '../ui/section';
 import { Chestsort } from './chestsort/chestsort';
+import { ModsAboutDe } from './mods-about-de';
 import { ModsAboutEn } from './mods-about-en';
 import { ModsAboutFr } from './mods-about-fr';
 
-/** Page Mods: what the installed mods do (open), then the chestsort categories editor (closed). */
+/** The `chestsort` add-on: what the installed mods do (open), then the chestsort categories editor (closed). */
 @Component({
-  imports: [T, Section, Chestsort, ModsAboutFr, ModsAboutEn],
+  imports: [T, ConfirmDialog, Section, Chestsort, ModsAboutFr, ModsAboutEn, ModsAboutDe],
   selector: 'app-mods',
   template: `
     @if (!session.loaded()) {
       <p role="status">{{ 'common.loading' | t }}</p>
     } @else if (session.error()) {
       <p role="alert" class="err">{{ session.error() }}</p>
-    } @else if (!session.hasAccess()) {
+    } @else if (!session.hasAccess('chestsort')) {
       <p role="alert" class="err">{{ 'common.no_access' | t }}</p>
     } @else {
       <app-section [heading]="'sec.mods' | t" storageKey="mods-about" [open]="true">
-        @if (i18n.lang() === 'fr') {
-          <app-mods-about-fr />
-        } @else {
-          <app-mods-about-en />
+        @switch (i18n.lang()) {
+          @case ('fr') {
+            <app-mods-about-fr />
+          }
+          @case ('de') {
+            <app-mods-about-de />
+          }
+          @default {
+            <app-mods-about-en />
+          }
         }
       </app-section>
       @if (session.me()?.chestsort) {
@@ -31,9 +39,16 @@ import { ModsAboutFr } from './mods-about-fr';
         </app-section>
       }
     }
+    <app-confirm-dialog />
   `,
 })
 export class Mods {
   protected readonly session = inject(Session);
   protected readonly i18n = inject(I18n);
+  /** Set by the site on the element. */
+  readonly lang = input('fr');
+
+  constructor() {
+    effect(() => this.i18n.setLang(this.lang()));
+  }
 }

@@ -20,13 +20,8 @@ export interface JournalRow {
   target: string;
   result: string;
 }
-export interface AccessRow {
-  user_key: string;
-  username: string;
-  level: 'read' | 'action' | null;
-}
 
-/** Lists of the Serveur page (backups, journal, access) and their load errors. */
+/** Lists of the Serveur page (backups, journal) and their load errors. */
 @Injectable({ providedIn: 'root' })
 export class ServerData {
   private readonly api = inject(Api);
@@ -36,8 +31,6 @@ export class ServerData {
   readonly backupsError = signal('');
   readonly journal = signal<JournalRow[]>([]);
   readonly journalError = signal('');
-  readonly access = signal<AccessRow[]>([]);
-  readonly accessError = signal('');
 
   async loadBackups(): Promise<void> {
     try {
@@ -54,15 +47,6 @@ export class ServerData {
       this.journalError.set('');
     } catch (err) {
       this.journalError.set(failure(err, this.i18n.t));
-    }
-  }
-
-  async loadAccess(): Promise<void> {
-    try {
-      this.access.set(await this.api.get<AccessRow[]>('/access'));
-      this.accessError.set('');
-    } catch (err) {
-      this.accessError.set(failure(err, this.i18n.t));
     }
   }
 

@@ -7,11 +7,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 Level = Literal["read", "action"]
+Addon = Literal["server", "chestsort"]
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS access (
-    user_key TEXT PRIMARY KEY, username TEXT NOT NULL, level TEXT NOT NULL,
-    by TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS access_v2 (
+    addon TEXT NOT NULL, user_key TEXT NOT NULL, username TEXT NOT NULL, level TEXT NOT NULL,
+    by TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (addon, user_key));
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, username TEXT NOT NULL,
     action TEXT NOT NULL, target TEXT NOT NULL, result TEXT NOT NULL, pelican_status INTEGER);
@@ -47,36 +48,40 @@ class Store:
         self._db.executescript(_SCHEMA)
         self.purge(datetime.now(UTC), journal_days)
 
-    def grant(self, user_key: str, username: str, level: Level, by: str) -> None:
+    def grant(self, addon: Addon, user_key: str, username: str, level: Level, by: str) -> None:
         with self._lock:
             self._db.execute(
-                "INSERT OR REPLACE INTO access (user_key, username, level, by, at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (user_key, username, level, by, datetime.now(UTC).isoformat()),
+                "INSERT OR REPLACE INTO access_v2 (addon, user_key, username, level, by, at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (addon, user_key, username, level, by, datetime.now(UTC).isoformat()),
             )
 
-    def revoke(self, user_key: str) -> None:
+    def revoke(self, addon: Addon, user_key: str) -> None:
         with self._lock:
-            self._db.execute("DELETE FROM access WHERE user_key = ?", (user_key,))
+            self._db.execute(
+                "DELETE FROM access_v2 WHERE addon = ? AND user_key = ?", (addon, user_key)
+            )
 
-    def level_of(self, user_key: str) -> Level | None:
+    def level_of(self, addon: Addon, user_key: str) -> Level | None:
         with self._lock:
             row = self._db.execute(
-                "SELECT level FROM access WHERE user_key = ?", (user_key,)
+                "SELECT level FROM access_v2 WHERE addon = ? AND user_key = ?", (addon, user_key)
             ).fetchone()
         return row[0] if row else None
 
-    def list_access(self) -> list[AccessRow]:
+    def list_access(self, addon: Addon) -> list[AccessRow]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT user_key, username, level, by, at FROM access ORDER BY username"
+                "SELECT user_key, username, level, by, at FROM access_v2"
+                " WHERE addon = ? ORDER BY username",
+                (addon,),
             ).fetchall()
         return [AccessRow(*r) for r in rows]
 
-    def prune_missing(self, present_keys: set[str]) -> list[str]:
-        removed = [r.user_key for r in self.list_access() if r.user_key not in present_keys]
+    def prune_missing(self, addon: Addon, present_keys: set[str]) -> list[str]:
+        removed = [r.user_key for r in self.list_access(addon) if r.user_key not in present_keys]
         for key in removed:
-            self.revoke(key)
+            self.revoke(addon, key)
         return removed
 
     def log(

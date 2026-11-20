@@ -9,7 +9,7 @@ import { ServerData } from '../core/server-data';
   template: `
     <p role="alert" class="err">{{ data.journalError() }}</p>
     <div class="scroll" tabindex="0" role="region" [attr.aria-label]="'sec.journal' | t">
-      <table>
+      <table class="entries-table">
         <thead>
           <tr>
             <th>{{ 'journal.date' | t }}</th>

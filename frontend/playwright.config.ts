@@ -1,8 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 import { resolve } from 'node:path';
 
-// The real add-on API process serves the built UI (so the CSP and the SPA fallback are the real ones);
-// the API calls themselves are mocked in the spec, nothing talks to a panel or a site.
+// The real add-on API process serves the built elements; a host page (see the spec) stands in for the site,
+// and the API calls themselves are mocked in the spec: nothing talks to a panel or a site.
 const db = `/tmp/addon-e2e-${process.pid}.db`;
 
 export default defineConfig({
@@ -12,12 +12,16 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'], locale: 'fr-FR', launchOptions: { args: ['--no-sandbox'] } },
+      use: {
+        ...devices['Desktop Chrome'],
+        locale: 'fr-FR',
+        launchOptions: { args: ['--no-sandbox'] },
+      },
     },
   ],
   webServer: {
     command: `rm -f ${db}* && uv run --project .. uvicorn addon.api:create_app --factory --port 4300`,
-    url: 'http://127.0.0.1:4300/addon/',
+    url: 'http://127.0.0.1:4300/addon/main.js',
     env: {
       PELICAN_URL: 'https://panel.example.test',
       PELICAN_API_KEY: 'e2e',

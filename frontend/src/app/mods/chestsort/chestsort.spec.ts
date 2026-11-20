@@ -11,6 +11,9 @@ const file = {
   hash: 'h1',
 };
 
+const chips = (el: HTMLElement) =>
+  [...el.querySelectorAll('.cs-tile span:not(.cs-noicon)')].map((x) => x.textContent?.trim());
+
 async function setup(opts: Parameters<typeof fakes>[0] = {}) {
   const f = fakes(opts);
   f.api.get.mockImplementation((p: string) =>
@@ -34,11 +37,15 @@ async function setup(opts: Parameters<typeof fakes>[0] = {}) {
     e.dispatchEvent(new Event('input'));
     fx.detectChanges();
   };
+  const choose = (name: string) =>
+    (
+      [...el.querySelectorAll('.cs-cat')].find((b) => b.textContent?.trim() === name) as HTMLElement
+    ).click();
   const settle = async () => {
     await fx.whenStable();
     fx.detectChanges();
   };
-  return { f, fx, el, q, btn, type, settle };
+  return { f, fx, el, q, btn, type, settle, choose };
 }
 
 describe('Chestsort', () => {
@@ -47,7 +54,7 @@ describe('Chestsort', () => {
   it('loads the file and shows the first category', async () => {
     const { q, el } = await setup();
     expect(q<HTMLTextAreaElement>('#cs-words').value).toBe('a b');
-    expect(q<HTMLTextAreaElement>('#cs-items').value).toBe('Apple\nBread');
+    expect(chips(el)).toEqual(['Apple', 'Bread']);
     expect(el.textContent).toContain('2 objets');
   });
 
@@ -72,12 +79,67 @@ describe('Chestsort', () => {
     void fx;
   });
 
-  it('a filter makes the items read-only and shows a count', async () => {
-    const { el, q, type } = await setup();
+  it('a filter narrows the chips and shows a count', async () => {
+    const { el, type } = await setup();
     await type('#cs-filter', 'app');
-    expect(q<HTMLTextAreaElement>('#cs-items').value).toBe('Apple');
-    expect(q<HTMLTextAreaElement>('#cs-items').readOnly).toBe(true);
+    expect(chips(el)).toEqual(['Apple']);
     expect(el.textContent).toContain('1 sur 2 objets');
+  });
+
+  it('adds items typed or pasted, one chip each, and says what was already there', async () => {
+    const { el, btn, type, settle } = await setup();
+    await type('#cs-add', 'Cheese, apple\nMilk');
+    btn("Ajouter l'objet")!.click();
+    await settle();
+    expect(chips(el)).toEqual(['Apple', 'Bread', 'Cheese', 'Milk']);
+    expect(el.textContent).toContain('Ajouté : Cheese, Milk.');
+    expect(el.textContent).toContain('Déjà dans cette catégorie : apple.');
+  });
+
+  it('an item held by another category is not added until the user moves it', async () => {
+    const { f, el, btn, type, settle, choose } = await setup();
+    await type('#cs-name', 'x'); // keep the first category selected
+    choose('Wood');
+    await type('#cs-add', 'bread');
+    btn("Ajouter l'objet")!.click();
+    await settle();
+    expect(chips(el)).toEqual([]);
+    expect(el.textContent).toContain('« bread » est déjà dans « Food ».');
+    btn('Déplacer ici')!.click();
+    await settle();
+    expect(chips(el)).toEqual(['bread']);
+    btn('Aperçu des changements')!.click();
+    await settle();
+    expect(f.api.post).toHaveBeenCalledWith('/chestsort/preview', {
+      categories: expect.objectContaining({
+        Food: { words: ['a b'], items: ['Apple'] },
+        Wood: { words: [], items: ['bread'] },
+      }),
+    });
+  });
+
+  it('leaving a conflict alone changes nothing', async () => {
+    const { el, btn, type, settle, choose } = await setup();
+    choose('Wood');
+    await type('#cs-add', 'Apple');
+    btn("Ajouter l'objet")!.click();
+    await settle();
+    btn('Laisser où ils sont')!.click();
+    await settle();
+    expect(chips(el)).toEqual([]);
+    expect(el.textContent).not.toContain('Déplacer ici');
+  });
+
+  it('removes an item with its own button, and a read-only user has none', async () => {
+    const { el, btn, settle } = await setup();
+    (el.querySelector('[aria-label="Retirer Apple"]') as HTMLButtonElement).click();
+    await settle();
+    expect(chips(el)).toEqual(['Bread']);
+    expect(btn('Enregistrer')!.disabled).toBe(true);
+    TestBed.resetTestingModule();
+    const ro = await setup({ me: me({ level: 'read' }) });
+    expect(ro.el.querySelector('.cs-x')).toBeNull();
+    expect(ro.el.querySelector('#cs-add')).toBeNull();
   });
 
   it('Save needs a preview without error; any edit disables it again', async () => {
@@ -172,7 +234,7 @@ describe('Chestsort', () => {
     await type('#cs-name', 'Ore');
     btn('Ajouter')!.click();
     await settle();
-    expect([...el.querySelectorAll('#cs-list option')].map((o) => o.textContent)).toEqual([
+    expect([...el.querySelectorAll('.cs-cat')].map((o) => o.textContent?.trim())).toEqual([
       'Food',
       'Wood',
       'Ore',
@@ -191,6 +253,142 @@ describe('Chestsort', () => {
     expect(f.confirm.ask).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Supprimer la catégorie « Food » ?' }),
     );
-    expect([...el.querySelectorAll('#cs-list option')].map((o) => o.textContent)).toEqual(['Wood']);
+    expect([...el.querySelectorAll('.cs-cat')].map((o) => o.textContent?.trim())).toEqual(['Wood']);
+  });
+});
+
+describe('Chestsort download', () => {
+  afterEach(() => TestBed.resetTestingModule());
+
+  it('downloads the file the server builds from the edited categories, even read-only', async () => {
+    const { f, btn, settle } = await setup({ me: me({ level: 'read' }) });
+    f.api.post.mockResolvedValue({ name: 'chestsort_categories.json', text: '{"categories":{}}' });
+    URL.createObjectURL = vi.fn().mockReturnValue('blob:x');
+    URL.revokeObjectURL = vi.fn();
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
+    btn('Télécharger le fichier')!.click();
+    await settle();
+    expect(f.api.post).toHaveBeenCalledWith('/chestsort/export', { categories: file.categories });
+    expect(click).toHaveBeenCalledOnce();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:x');
+    click.mockRestore();
+  });
+
+  it('downloads nothing and shows the errors when the content is refused', async () => {
+    const { f, el, btn, settle } = await setup();
+    f.api.post.mockRejectedValue(
+      new ApiError(422, 'invalid_content', undefined, ['« x » est dans deux catégories.']),
+    );
+    URL.createObjectURL = vi.fn();
+    btn('Télécharger le fichier')!.click();
+    await settle();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('est dans deux catégories');
+  });
+});
+
+describe('Chestsort catalogue', () => {
+  afterEach(() => TestBed.resetTestingModule());
+  const guid = '0002f740-86a7-4764-ad8e-06423588a054';
+  const rows: [string, string, string, string, string][] = [
+    ['Material_T2_Iron_Bar', 'Lingot de fer', 'Iron Bar', 'Eisenbarren', guid],
+    ['Food_T1_Apple', 'Pomme', 'Apple', 'Apfel', ''],
+  ];
+
+  it('hides the paste box when the catalogue is there, and shows it without', async () => {
+    const withCat = await setup({ catalog: rows });
+    expect(withCat.el.querySelector('#cs-add')).toBeNull();
+    TestBed.resetTestingModule();
+    const without = await setup();
+    expect(without.el.querySelector('#cs-add')).not.toBeNull();
+  });
+
+  it('filters the items of a category by their displayed name', async () => {
+    const t = await setup({
+      catalog: [
+        ['Apple', 'Pomme', 'Apple', 'Apfel', ''],
+        ['Bread', 'Pain', 'Bread', 'Brot', ''],
+      ],
+    });
+    await t.type('#cs-filter', 'pom');
+    expect(chips(t.el)).toEqual(['Pomme']);
+    await t.type('#cs-filter', 'apple'); // the internal name is not searched
+    expect(chips(t.el)).toEqual([]);
+  });
+
+  describe('picker popup', () => {
+    beforeAll(() => {
+      // jsdom has no modal dialogs
+      const d = HTMLDialogElement.prototype;
+      d.showModal ??= function (this: HTMLDialogElement) {
+        this.setAttribute('open', '');
+      };
+      d.close ??= function (this: HTMLDialogElement) {
+        this.removeAttribute('open');
+      };
+    });
+    const open = async (cat: typeof rows) => {
+      const t = await setup({ catalog: cat });
+      [...t.el.querySelectorAll('button')]
+        .find((b) => b.textContent?.includes('Parcourir'))
+        ?.click();
+      t.fx.detectChanges();
+      return t;
+    };
+    const rowsOf = (el: HTMLElement) => [...el.querySelectorAll('.cs-pick-list li')];
+
+    it('lists items by name with their picture and filters while typing', async () => {
+      const { el, type } = await open(rows);
+      expect(rowsOf(el).map((r) => r.querySelector('.cs-pick-name')?.textContent?.trim())).toEqual([
+        'Lingot de fer',
+        'Pomme',
+      ]);
+      expect(rowsOf(el)[0].querySelector('img')?.getAttribute('src')).toBe(`/items/${guid}.png`);
+      await type('#pick-q', 'pom');
+      expect(rowsOf(el)).toHaveLength(1);
+      expect(el.querySelector('.cs-pick footer')?.textContent).toContain('1');
+    });
+
+    it('also finds items by the name of the category that holds them', async () => {
+      const { el, type } = await open([['Apple', 'Pomme', 'Apple', 'Apple', ''], ...rows]);
+      await type('#pick-q', 'food'); // Apple is in the category Food
+      expect(rowsOf(el).map((r) => r.querySelector('.cs-pick-name')?.textContent)).toEqual([
+        expect.stringContaining('Pomme'),
+      ]);
+    });
+
+    it('speaks the language of the site', async () => {
+      const { el, fx } = await open(rows);
+      const { I18n } = await import('../../core/i18n');
+      TestBed.inject(I18n).setLang('de');
+      fx.detectChanges();
+      expect(rowsOf(el)[0].querySelector('.cs-pick-name')?.textContent).toContain('Apfel');
+    });
+
+    it('adds an item, then shows it as already here', async () => {
+      const { el, fx, f } = await open(rows);
+      const add = rowsOf(el)[0].querySelector('button') as HTMLButtonElement;
+      add.click();
+      fx.detectChanges();
+      expect(rowsOf(el)[0].querySelector('button')).toBeNull(); // no button: already here
+      expect(rowsOf(el)[0].textContent).toContain('Déjà dans cette catégorie');
+      void f;
+    });
+
+    it('moves an item held by another category', async () => {
+      const { el, fx, choose } = await open([['Apple', 'Pomme', 'Apple', 'Apple', ''], ...rows]);
+      // Food (selected) holds Apple only in the fixture as "Apple"; pick Bread from Wood: select Wood first
+      choose('Wood');
+      fx.detectChanges();
+      const row = rowsOf(el).find((r) => r.textContent?.includes('Pomme'))!;
+      expect(row.textContent).toContain('Food');
+      (row.querySelector('button') as HTMLButtonElement).click();
+      fx.detectChanges();
+      expect(rowsOf(el).find((r) => r.textContent?.includes('Pomme'))?.textContent).toContain(
+        'Déjà dans cette catégorie',
+      );
+    });
   });
 });

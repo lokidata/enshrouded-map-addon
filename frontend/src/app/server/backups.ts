@@ -13,9 +13,9 @@ import { Session } from '../core/session';
   imports: [T],
   selector: 'app-backups',
   template: `
-    @if (session.canAct()) {
+    @if (session.canAct('server')) {
       <p>
-        <button type="button" class="btn" [disabled]="busy()" (click)="create()">
+        <button type="button" [disabled]="busy()" (click)="create()">
           {{ 'backups.create' | t }}
         </button>
       </p>
@@ -23,7 +23,7 @@ import { Session } from '../core/session';
     <p role="status">{{ message() }}</p>
     <p role="alert" class="err">{{ error() || data.backupsError() }}</p>
     <div class="scroll" tabindex="0" role="region" [attr.aria-label]="'sec.backups' | t">
-      <table>
+      <table class="entries-table">
         <thead>
           <tr>
             <th>{{ 'backups.name' | t }}</th>
@@ -43,8 +43,8 @@ import { Session } from '../core/session';
               <td>{{ date(b.created_at) }}</td>
               <td>{{ label(b) }}</td>
               <td>
-                @if (session.canAct() && ready(b)) {
-                  <button type="button" class="btn dl" [disabled]="busy()" (click)="download(b)">
+                @if (session.canAct('server') && ready(b)) {
+                  <button type="button" class="dl" [disabled]="busy()" (click)="download(b)">
                     {{ 'backups.download' | t }}
                   </button>
                 }

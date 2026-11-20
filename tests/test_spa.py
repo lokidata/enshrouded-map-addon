@@ -13,7 +13,6 @@ from addon.config import Settings
 def client(tmp_path: Path) -> Iterator[TestClient]:
     web = tmp_path / "web"
     web.mkdir()
-    (web / "index.html").write_text("<html><app-root></app-root></html>")
     (web / "main.js").write_text("console.log(1)")
     settings = Settings(
         pelican_url="https://panel.example.test",
@@ -28,10 +27,15 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         yield c
 
 
-def test_deep_link_serves_the_app(client: TestClient) -> None:
-    resp = client.get("/addon/mods")
-    assert resp.status_code == 200 and "text/html" in resp.headers["content-type"]
-    assert "<app-root" in resp.text
+def test_addon_root_redirects_to_site_fragment(client: TestClient) -> None:
+    resp = client.get("/addon/", follow_redirects=False)
+    assert resp.status_code in (302, 307) and resp.headers["location"] == "/#addon/server"
+
+
+def test_no_spa_fallback(client: TestClient) -> None:
+    # screens are routes of the site: an unknown path under /addon/ is a plain 404
+    assert client.get("/addon/mods").status_code == 404
+    assert client.get("/addon/index.html").status_code == 404
 
 
 def test_real_asset_is_served_as_is(client: TestClient) -> None:
@@ -39,7 +43,7 @@ def test_real_asset_is_served_as_is(client: TestClient) -> None:
 
 
 def test_unknown_asset_is_404(client: TestClient) -> None:
-    assert client.get("/addon/ds/nope.woff2").status_code == 404
+    assert client.get("/addon/nope.woff2").status_code == 404
 
 
 def test_unknown_api_path_is_not_html(client: TestClient) -> None:
@@ -47,11 +51,10 @@ def test_unknown_api_path_is_not_html(client: TestClient) -> None:
     assert resp.status_code == 404 and "<app-root" not in resp.text
 
 
-def test_security_headers_on_the_app_and_on_a_deep_link(client: TestClient) -> None:
-    for path in ("/addon/", "/addon/mods"):
-        resp = client.get(path)
-        assert resp.headers["content-security-policy"] == CSP
-        assert resp.headers["x-content-type-options"] == "nosniff"
+def test_security_headers_on_the_script(client: TestClient) -> None:
+    resp = client.get("/addon/main.js")
+    assert resp.headers["content-security-policy"] == CSP
+    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 def test_missing_ui_folder_is_404_not_a_crash(tmp_path: Path) -> None:
@@ -64,5 +67,4 @@ def test_missing_ui_folder_is_404_not_a_crash(tmp_path: Path) -> None:
         static_dir=str(tmp_path / "not-built"),
     )
     with TestClient(create_app(settings, httpx.MockTransport(lambda r: httpx.Response(500)))) as c:
-        assert c.get("/addon/").status_code == 404
-        assert c.get("/addon/mods").status_code == 404
+        assert c.get("/addon/main.js").status_code == 404

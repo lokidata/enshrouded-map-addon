@@ -16,6 +16,7 @@ _MAX_NAME = 60
 _MAX_STR = 200
 _MAX_WORDS = 100
 _MAX_ITEMS = 20000
+_MAX_CLASHES = 20  # messages shown for items in two categories
 _BUILTIN_GROUPS = {"nourriture"}  # the mod's readme says not to reuse these names
 
 
@@ -96,6 +97,8 @@ def validate(obj: dict[str, Any]) -> Report:
         errors.append(f"Il faut de 1 à {_MAX_CATEGORIES} catégories (il y en a {len(cats)}).")
     seen_names: dict[str, str] = {}
     word_owner: dict[str, str] = {}
+    item_owner: dict[str, str] = {}
+    clashes: list[str] = []  # an item may be in one category only
     for name, cat in cats.items():
         bad = any(ord(c) < 32 or ord(c) == 127 for c in name) or _not_utf8(name)
         if not name or len(name) > _MAX_NAME or bad:
@@ -117,7 +120,7 @@ def validate(obj: dict[str, Any]) -> Report:
             if k not in cat:
                 errors.append(f"Catégorie « {name} » : « {k} » manquant.")
         words = _check_list(name, "words", cat.get("words", []), _MAX_WORDS, errors)
-        _check_list(name, "items", cat.get("items", []), _MAX_ITEMS, errors)
+        items = _check_list(name, "items", cat.get("items", []), _MAX_ITEMS, errors)
         if low in _BUILTIN_GROUPS:
             warnings.append(f"Catégorie « {name} » : nom d'un groupe intégré du mod, à éviter.")
         if "items" in cat and isinstance(cat["items"], list) and not cat["items"]:
@@ -126,6 +129,16 @@ def validate(obj: dict[str, Any]) -> Report:
             o = word_owner.setdefault(w.casefold(), name)
             if o != name:
                 warnings.append(f"Le mot « {w} » est dans « {o} » et « {name} ».")
+        for i in items:
+            o = item_owner.setdefault(i.casefold(), name)
+            if o != name:
+                clashes.append(
+                    f"L'objet « {i} » est dans « {o} » et « {name} » :"
+                    " un objet ne peut être que dans une catégorie."
+                )
+    errors.extend(clashes[:_MAX_CLASHES])
+    if len(clashes) > _MAX_CLASHES:
+        errors.append(f"... et {len(clashes) - _MAX_CLASHES} autres objets en double.")
     return Report(errors, warnings)
 
 

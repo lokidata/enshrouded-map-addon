@@ -60,4 +60,21 @@ describe('Status', () => {
     await s.tick();
     expect(get).toHaveBeenCalledTimes(1);
   });
+
+  it('setActive(false) stops the poll, setActive(true) reads again at once', async () => {
+    vi.useFakeTimers();
+    const get = vi.fn(() => Promise.resolve(info));
+    const s = make(get);
+    s.setActive(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+    s.setActive(false);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(get).toHaveBeenCalledTimes(1);
+    s.setActive(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(2);
+    s.setActive(false);
+    vi.useRealTimers();
+  });
 });
