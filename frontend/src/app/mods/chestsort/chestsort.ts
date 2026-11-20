@@ -203,6 +203,10 @@ const SHOWN = 200; // chips drawn at once: a category may hold thousands of item
     </div>
     <p class="row">
       <button type="button" (click)="download()">{{ 'cs.download' | t }}</button>
+      @if (edit()) {
+        <button type="button" (click)="file.click()">{{ 'cs.import' | t }}</button>
+        <input #file type="file" accept=".json,application/json" hidden (change)="importFile($event)" />
+      }
     </p>
     @if (edit()) {
       <p class="row">
@@ -500,6 +504,25 @@ export class Chestsort {
       URL.revokeObjectURL(url);
     } catch (err) {
       this.fail(csFailure(err, this.i18n.t), err);
+    }
+  }
+
+  /** Loads a local file into the editor; nothing is sent until the usual preview, confirmation and save. */
+  protected async importFile(e: Event): Promise<void> {
+    const input = e.target as HTMLInputElement;
+    const f = input.files?.[0];
+    input.value = '';
+    if (!f || !this.edit()) return;
+    this.fail('');
+    try {
+      const raw = JSON.parse(await f.text()) as { categories?: unknown };
+      const cats = raw?.categories;
+      if (typeof cats !== 'object' || cats === null || Array.isArray(cats)) throw new Error();
+      this.cats.set(cats as Cats); // the add-on's preview checks the content
+      this.dirty();
+      this.fill(null);
+    } catch {
+      this.fail(this.i18n.t('cs.import_bad'));
     }
   }
 
