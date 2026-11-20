@@ -1,9 +1,6 @@
 # enshrouded-map-addon
 
-Game-server add-on for the private [Enshrouded interactive map](https://github.com/lokidata/enshrouded-map) site: shows the server status, lets authorised users start, stop and restart it and create backups (stop and restart need a confirmation; rate-limited), and lists backups, through a restricted Pelican key, with a per-user access list and a 1-day audit journal (access changes and every power or backup attempt, 500 newest rows shown; status polls are not journalled) (FastAPI, Python 3.13). Functional rules: `docs/RULES.md`.
-
-## How it plugs into the site
-Run it as its own container and set `ADDON_URL` (origin only, e.g. `http://addon:8000`) on the site's web container. The site's nginx then proxies `/addon/` to it. For each request the add-on relays the caller's cookie to the site's `/api/v1/auth/me` (and `/api/v1/auth/users` for the administrator's access screen), so it needs the companion site change (`id`, `created_at` and `addon` in `/auth/me`). Without it the add-on refuses everyone. See `deploy/`.
+Game-server add-ons for the private [Enshrouded interactive map](https://github.com/lokidata/enshrouded-map) site (the server page and the chestsort categories editor): shows the server status, lets authorised users start, stop and restart it and create backups (stop and restart need a confirmation; rate-limited), and lists backups, through a restricted Pelican key, with a per-user access list and a 1-day audit journal (access changes and every power or backup attempt, 500 newest rows shown; status polls are not journalled) (FastAPI, Python 3.13). Functional rules: `docs/RULES.md`.
 
 ## Pelican prerequisites
 - A dedicated Pelican user with **no role** (a role with admin "update" on servers would give all rights on all servers).
@@ -19,6 +16,8 @@ make check-frontend   # npm audit, lint (+ design guard), build, Vitest, Playwri
 make lock    # regenerate requirements.lock after a dependency change
 ```
 ## How it plugs into the site
+Run it as its own container and set `ADDON_URL` (origin only, e.g. `http://addon:8000`) on the site's web container. The site's nginx then proxies `/addon/` to it. For each request the add-on relays the caller's cookie to the site's `/api/v1/auth/me` (and `/api/v1/auth/users` for the administrator's access screen), so it needs the companion site change (`id`, `created_at` and `addon` in `/auth/me`). Without it the add-on refuses everyone. See `deploy/`.
+
 The screens are two custom elements (`addon-server`, `addon-chestsort`) that the site mounts in its own layout: the site reads `GET /addon/api/manifest` (filtered by the account's access, contract in `contract/manifest.schema.json`), adds one tab per add-on and loads `main.js` + `styles.css` from `/addon/`. Each add-on has its own access list, managed by the site administrator in the site's Administration dialog (one tab per add-on). `GET /addon/` redirects to `/#addon/server`. Deploy the add-on and the site together, then grant access again (the lists start empty).
 
 The UI is an Angular app in `frontend/` (Node 24 to build; `cd frontend && npm ci --ignore-scripts && npm run build`, then run the API with `STATIC_DIR` unset: it serves `frontend/dist/browser`; a bare element needs the site's tokens and `workshop.css` to look right, so try it through the site). Environment variables: `docs/RULES.md`. Container: `Dockerfile`, example stack in `deploy/`.
@@ -32,7 +31,7 @@ The UI is an Angular app in `frontend/` (Node 24 to build; `cd frontend && npm c
 MIT licence, see `LICENSE`.
 
 ## Chestsort editor (optional)
-Set `CHESTSORT_FILE` to the mod's categories file from the server root (e.g. `/chestsort_categories.json`) to show the "Catégories de coffres" card: view for level `read`, edit and restore for `action`, with validation, a diff (one preview per second), a dated `.bak-` copy before each write (never overwriting an existing one: `-2`, `-3`... suffix), a read-back check and a rollback on any failure after the write was sent (also after a timeout); a failed rollback answers `rollback_failed` with the `.bak-` name to restore. A file that is not UTF-8 is refused (`file_not_utf8`), never rewritten. Off when unset. Rules: `docs/RULES.md`. The write is `POST files/write?file=<path>` with the raw body (204).
+Set `CHESTSORT_FILE` to the mod's categories file from the server root (e.g. `/chestsort_categories.json`) to show the "Catégories de coffres" card: view for level `read`, edit and restore for `action`, with validation, a diff (one preview per second), a dated `.bak-` copy before each write (never overwriting an existing one: `-2`, `-3`... suffix), a read-back check and a rollback on any failure after the write was sent (also after a timeout); a failed rollback answers `rollback_failed` with the `.bak-` name to restore. A file that is not UTF-8 is refused (`file_not_utf8`), never rewritten. Off when unset. The editor shows the game's items with their picture and name in the site's language when the site serves `/item-names.json` (optional), can download the file it would write, and refuses an item in two categories. Rules: `docs/RULES.md`. The write is `POST files/write?file=<path>` with the raw body (204).
 
 ## Backups of the save only
 
