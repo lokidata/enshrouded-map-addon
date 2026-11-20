@@ -1,3 +1,4 @@
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -68,3 +69,12 @@ def test_missing_ui_folder_is_404_not_a_crash(tmp_path: Path) -> None:
     )
     with TestClient(create_app(settings, httpx.MockTransport(lambda r: httpx.Response(500)))) as c:
         assert c.get("/addon/main.js").status_code == 404
+
+
+def test_the_image_healthcheck_url_answers_200(client: TestClient) -> None:
+    """The container is healthy only if this URL answers 2xx *after* redirects: `/addon/` is a redirect
+    to the site, which broke the 0.4.0 image (the web container never started behind it)."""
+    docker = (Path(__file__).parent.parent / "Dockerfile").read_text()
+    url = re.search(r"HEALTHCHECK.*?urlopen\('http://127\.0\.0\.1:8000(/[^']*)'", docker, re.S)
+    assert url, "no urlopen URL in the Dockerfile HEALTHCHECK"
+    assert client.get(url.group(1), follow_redirects=True).status_code == 200
