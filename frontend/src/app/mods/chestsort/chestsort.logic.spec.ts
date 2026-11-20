@@ -14,6 +14,7 @@ import {
   moveItems,
   ownerOf,
   parseNames,
+  prettyName,
   previewText,
   removeItem,
   renameCategory,
@@ -158,5 +159,15 @@ describe('chestsort items: one item, one category', () => {
     const d: Cats = { A: { words: [], items: ['X', 'Y'] }, B: { words: [], items: ['x'] } };
     expect(duplicates(d)).toEqual([{ item: 'X', cats: ['A', 'B'] }]);
     expect(duplicates(c())).toEqual([]);
+  });
+});
+
+describe('prettyName', () => {
+  it('makes an internal name readable', () => {
+    expect(prettyName('Armor_lvl02_Tinko_Arms')).toBe('Armor lvl02 Tinko Arms');
+    expect(prettyName('_Prop_Decoration_T5_Sideboard_Large')).toBe(
+      'Prop Decoration T5 Sideboard Large',
+    );
+    expect(prettyName('Iron__Bar_')).toBe('Iron Bar');
   });
 });

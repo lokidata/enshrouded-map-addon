@@ -14,6 +14,7 @@ import {
   deleteCategory,
   duplicates,
   filterItems,
+  prettyName,
   lines,
   moveItems,
   parseNames,
@@ -175,7 +176,7 @@ const SHOWN = 200; // chips drawn at once: a category may hold thousands of item
                   <span [attr.title]="i">{{ l.label }}</span>
                 } @else {
                   <span class="cs-noicon" aria-hidden="true"></span>
-                  <span>{{ i }}</span>
+                  <span class="cs-unnamed" [attr.title]="i">{{ pretty(i) }}</span>
                 }
                 @if (edit()) {
                   <button
@@ -234,6 +235,7 @@ export class Chestsort {
   private readonly session = inject(Session);
   protected readonly catalog = inject(Catalog);
   protected readonly picking = signal(false);
+  protected readonly pretty = prettyName;
   protected readonly edit = computed(() => this.session.canAct('chestsort'));
 
   protected readonly cats = signal<Cats>({});
@@ -300,7 +302,7 @@ export class Chestsort {
   });
   /** What the user reads for an item: its name in his language, else the internal name. */
   private readonly shownName = (item: string): string =>
-    this.labels().get(item.toLowerCase())?.label ?? item;
+    this.labels().get(item.toLowerCase())?.label ?? prettyName(item);
   /** Name and picture of an internal name, when the catalogue knows it. */
   protected readonly labels = computed(() => {
     const lang = this.i18n.lang();

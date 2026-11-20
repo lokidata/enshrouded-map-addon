@@ -305,6 +305,14 @@ describe('Chestsort catalogue', () => {
     expect(without.el.querySelector('#cs-add')).not.toBeNull();
   });
 
+  it('shows a readable name, muted, for an item the catalogue has no name for', async () => {
+    const t = await setup({ catalog: [['Other', 'Autre', 'Other', 'Andere', '']] });
+    const tile = [...t.el.querySelectorAll('.cs-tile')].find((x) =>
+      x.textContent?.includes('Apple'),
+    );
+    expect(tile?.querySelector('.cs-unnamed')?.textContent?.trim()).toBe('Apple');
+  });
+
   it('filters the items of a category by their displayed name', async () => {
     const t = await setup({
       catalog: [
