@@ -141,7 +141,8 @@
   }
   & .cs-cat[aria-pressed='true'] {
     border-color: var(--accent);
-    color: var(--accent);
+    background: var(--panel-deep);
+    color: var(--text);
   }
   & .cs-words {
     max-width: 40rem;

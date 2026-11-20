@@ -50,6 +50,15 @@ async function host(page: Page, tag: 'server' | 'chestsort', attrs = 'lang="fr"'
 }
 
 async function mock(page: Page, me: Me = { is_admin: true, level: 'action', chestsort: true }) {
+  // the site's item catalogue (here with two items, one holding a picture guid)
+  await page.route('**/item-names.json', (r) =>
+    r.fulfill({
+      json: [
+        ['Food_Apple', 'Pomme', 'Apple', 'Apfel', ''],
+        ['Material_Iron_Bar', 'Lingot de fer', 'Iron Bar', 'Eisenbarren', ''],
+      ],
+    }),
+  );
   await page.route('**/addon/api/**', (route) => {
     const path = new URL(route.request().url()).pathname.replace('/addon/api', '');
     const body: Record<string, unknown> = {
@@ -128,6 +137,25 @@ test('Chestsort element: text open, editor closed, AXE clean', async ({ page }) 
   expect(errs).toEqual([]);
 });
 
+test('Chestsort element: the item picker opens, searches by name and is AXE clean', async ({
+  page,
+}) => {
+  const errs = errors(page);
+  await mock(page);
+  await host(page, 'chestsort');
+  await page.locator('details.sec summary', { hasText: 'Catégories de coffres' }).click();
+  await page.getByRole('button', { name: 'Parcourir les objets…' }).click();
+  const dialog = page.getByRole('dialog', { name: /Ajouter des objets/ });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Rechercher un objet par son nom').fill('ling');
+  await expect(dialog.locator('.cs-pick-list li')).toHaveCount(1);
+  await axe(page);
+  await dialog.getByRole('button', { name: 'Ajouter', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Fermer' }).click();
+  await expect(page.locator('.cs-tile', { hasText: 'Lingot de fer' })).toBeVisible();
+  expect(errs).toEqual([]);
+});
+
 test('level read: no action buttons', async ({ page }) => {
   await mock(page, { is_admin: false, level: 'read', chestsort: true });
   await host(page, 'server');
@@ -169,7 +197,9 @@ test('the stop dialog asks first', async ({ page }) => {
   await axe(page);
 });
 
-test('the lang attribute switches the text, German falls back to English', async ({ page }) => {
+test('the lang attribute switches the text between English, German and French', async ({
+  page,
+}) => {
   const errs = errors(page);
   await mock(page);
   await host(page, 'server');
@@ -178,7 +208,7 @@ test('the lang attribute switches the text, German falls back to English', async
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
   await axe(page);
   await el.evaluate((e) => e.setAttribute('lang', 'de'));
-  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Anhalten', exact: true })).toBeEnabled();
   await el.evaluate((e) => e.setAttribute('lang', 'fr'));
   await expect(page.getByRole('button', { name: 'Arrêter' })).toBeEnabled();
   expect(errs).toEqual([]);

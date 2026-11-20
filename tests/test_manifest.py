@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -26,7 +27,7 @@ def settings(tmp_path: Path, chest: bool = True) -> Settings:
     )
 
 
-def conforms(m: dict) -> bool:
+def conforms(m: dict[str, Any]) -> bool:
     """The parts of the schema that matter, checked by hand (no jsonschema dependency)."""
     path = re.compile(SCHEMA["$defs"]["path"]["pattern"])
     ok = set(m) == set(SCHEMA["required"]) and m["api_version"] == 1
