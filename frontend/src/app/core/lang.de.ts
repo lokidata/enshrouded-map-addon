@@ -92,6 +92,8 @@ export const de: Record<Key, string> = {
   'cs.items_filtered': '{shown} von {n} Gegenständen',
   'cs.filter': 'Filter',
   'cs.download': 'Datei herunterladen',
+  'cs.import': 'Datei importieren',
+  'cs.import_bad': 'Datei nicht lesbar: JSON mit „categories“ erwartet',
   'cs.preview': 'Änderungen ansehen',
   'cs.save': 'Speichern',
   'cs.restore_label': 'Eine Kopie wiederherstellen',

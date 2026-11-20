@@ -91,6 +91,8 @@ export const fr = {
   'cs.items_filtered': '{shown} sur {n} objets',
   'cs.filter': 'Filtrer',
   'cs.download': 'Télécharger le fichier',
+  'cs.import': 'Importer un fichier',
+  'cs.import_bad': 'Fichier illisible : JSON avec « categories » attendu',
   'cs.preview': 'Aperçu des changements',
   'cs.save': 'Enregistrer',
   'cs.restore_label': 'Restaurer une copie',
