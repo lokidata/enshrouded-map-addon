@@ -1,4 +1,5 @@
 import { Component, effect, inject, input, untracked } from '@angular/core';
+import { ApiBase } from '../core/api';
 import { I18n, T } from '../core/i18n';
 import { ServerData } from '../core/server-data';
 import { Session } from '../core/session';
@@ -44,10 +45,14 @@ export class Server {
   private readonly i18n = inject(I18n);
   /** Set by the site on the element: the language, and whether this screen is the one shown. */
   readonly lang = input('fr');
+  /** The public base of this add-on (`/addon/<key>/`), set by the site; checked by ApiBase. */
+  readonly base = input<string>();
+  private readonly apiBase = inject(ApiBase);
   readonly active = input('true');
 
   constructor() {
     effect(() => this.i18n.setLang(this.lang()));
+    effect(() => this.apiBase.set(this.base()));
     effect(() => {
       // the poll runs only for someone who may read the status, and only while the screen is shown
       const on = this.session.hasAccess('server') && this.active() !== 'false';

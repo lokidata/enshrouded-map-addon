@@ -3,23 +3,23 @@
 Update this file in the same change as any behaviour change.
 
 ## What it is
-A small service that shows an Enshrouded game server's status, lets level `action` users start, stop and restart it and create backups, lists backups and (optionally) edits the chestsort mod's chest categories file, through a restricted Pelican panel key. It sits behind the Enshrouded map site under `/addon/`. It never handles passwords: it relays the caller's `Cookie` header to the site (`GET /api/v1/auth/me`) to learn who they are, then applies its own access list. It alone holds the Pelican key; the browser never calls Pelican.
+A small service that shows an Enshrouded game server's status, lets level `action` users start, stop and restart it and create backups, lists backups and (optionally) edits the chestsort mod's chest categories file, through a restricted Pelican panel key. It sits behind the Enshrouded map site under `/addon/<key>/` (for example `/addon/main/`; the site strips the prefix, the add-on itself serves `/addon/...`). It never handles passwords: it relays the caller's `Cookie` header to the site (`GET /api/v1/addons/<entry>/me`) to learn who they are and their level on that entry. The site owns the access lists (the administrator enables each entry and grants levels in the site's Administration dialog); the add-on keeps none. It alone holds the Pelican key; the browser never calls Pelican.
 
 ## Who sees what
-Two add-ons, each with its own access list: `server` (status, power, backups, journal) and `chestsort` (the categories editor, only when `CHESTSORT_FILE` is set). The table below is for `server`; `chestsort` follows the same `read` / `action` split on its own routes. A level on one add-on gives nothing on the other.
+Two entries (`server`, `chestsort`), each with its own list kept by the site: `server` (status, power, backups, journal) and `chestsort` (the categories editor, only when `CHESTSORT_FILE` is set). The table below is for `server`; `chestsort` follows the same `read` / `action` split on its own routes. A level on one add-on gives nothing on the other.
 
-| Who | Status, backup list | Power, create backup | Journal | Access (site Administration tab) |
+| Who | Status, backup list | Power, create backup | Journal | Access (site Administration) |
 | --- | --- | --- | --- | --- |
-| Site administrator (`is_admin`) | yes | yes | full (with Pelican status codes) | manages it |
+| Site administrator (`is_admin`) | yes | yes | full (with Pelican status codes) | manages it on the site |
 | Level `action` | yes | yes | public columns | no |
 | Level `read` | yes | refused (403) | public columns | no |
 | None / not listed | refused (403) | refused (403) | refused | refused |
 | Not logged in | 401 | 401 | 401 | 401 |
 
-`action` adds `POST /power`, `POST /backups` and `POST /backups/{uuid}/download` to what `read` sees. The administrator is implicit (always `action`); an empty list means administrator only.
+`action` adds `POST /power`, `POST /backups` and `POST /backups/{uuid}/download` to what `read` sees. The administrator is implicit (always `action`); the site answers the level, so an empty list means administrator only.
 
 ## Screen
-The screens are **custom elements** that the main site mounts in its own layout, with its own menu and its own "Codex of the Shroud" look; the add-on has no page, header, navigation or design system of its own (`frontend/src/elements.ts`: one Angular application, two elements, built to `main.js` + `styles.css` under `frontend/dist/browser`, served by the API under `/addon/`; no Node in the image). The site reads `GET /addon/api/manifest` (see the API table and `contract/manifest.schema.json`) and adds one tab per add-on the account may use. `GET /addon/` redirects to `/#addon/server` (old bookmarks).
+The screens are **custom elements** that the main site mounts in its own layout, with its own menu and its own "Codex of the Shroud" look; the add-on has no page, header, navigation or design system of its own (`frontend/src/elements.ts`: one Angular application, two elements, built to `main.js` + `styles.css` under `frontend/dist/browser`, served by the API under `/addon/` behind the site's prefix strip, public path `/addon/<key>/`; no Node in the image). The site reads `GET /addon/api/manifest` (see the API table and `contract/manifest.schema.json`) and adds one tab per entry the administrator enabled and the account may use. Each element receives the attributes `lang`, `active` and `base`; `base` overrides the public path the front end derives from its bundle URL (`/addon/<key>/main.js` -> `/addon/<key>/`), which is how it calls its own API without knowing the key. `GET /addon/` redirects to `/#addon/server` (old bookmarks).
 
 - **`addon-server`** (add-on `server`): section **Pelican** (open by default): state card (name state, CPU, memory, disk, uptime), the Actions card, the backup list; section **Journal** (closed).
 - **`addon-chestsort`** (add-on `chestsort`, only when `me.chestsort` is true): section **Les mods du serveur** (open by default): short text on chestsort and storage (only the installed mods are described); section **Catégories de coffres** (closed).
@@ -74,20 +74,16 @@ Shown only when `CHESTSORT_FILE` is set. Structured editor:
 - Journal: action `chestsort`, target `save` or `restore`, result `ok` or the refusal reason (`confirmation_required`, `invalid_request`, `invalid_content`, `invalid_backup_name`, `unknown_backup`, `changed_elsewhere`, `too_large`, `file_invalid`, `file_not_utf8`, `backup_failed`, `rolled_back`, `rollback_failed`, `rate_limited`, `busy`, `timeout`, `timeout_rolled_back`, `pelican_*`, `internal_error`). Never the content, the diff or the validation messages. The log has one line on success (`chestsort_written categories= items= bak=`), counts and the backup name only. Previews and reads are not journalled.
 
 ## Access rules
-- The lists are managed from the **site's Administration dialog**, one tab per add-on, through `GET /{addon}/access` and `PUT /{addon}/access/{user_key}` (administrator only); the add-on's own screens have no access section.
-- One list per add-on, table `access_v2(addon, user_key, username, level, by, at)`. The former single `access` table is neither read nor migrated: both lists start empty after the upgrade and the administrator grants access again.
-- `GET /me` returns `levels: {server, chestsort}` (null = none; the administrator is `action` on both).
-- Identity of a site user = `"<id>:<created_at>"`. Site ids can be reused (plain SQLite primary key), so the pair is used: a re-created account never inherits access.
-- If a site account disappears, its entry is removed when the administrator opens the access list (journalled as `removed`). Reinstating is manual: the administrator ticks the new account again.
-- The administrator cannot change their own access (400 `administrator_is_implicit`).
-- Site unreachable, 5xx or malformed answer on `/auth/me`: 503, never access by default.
+- The add-on keeps no access list. The site does: `ADDONS` / `ADDON_URL` is a **site-side** setting (it gives this add-on a key such as `main`; the add-on never knows it), the administrator enables each entry in Administration, then grants `read` or `action` per account. A disabled or unknown entry answers 403 to everyone.
+- Identity and level come from the site: for each entry the add-on relays the caller's cookie to `GET {SITE_URL}/api/v1/addons/<entry>/me`. Contract: 200 `{user_key, username, is_admin, level}` with `user_key` = `<id>:<created_at ISO>` and `level` `"read"` or `"action"` (never null: a null level from a misbehaving site is treated as no access; non-empty `user_key` and `username` strings required; any other shape is a malformed answer); 401 = not logged in; 403 = no access (the site never says why: no identity is carried); anything else, a timeout or a malformed body: 503 `site_unavailable`, never access by default.
+- `GET /me` returns `levels: {server, chestsort}` (null = none), built from one site call per entry.
+- Removed with the site-side lists: `GET /{addon}/access`, `PUT /{addon}/access/{user_key}`, the user lookup through `/auth/users`, the `administrator_is_implicit` and `unknown_user` answers, the journal action `access` and the add-on's own computation of the `"<id>:<created_at>"` identity (the site's `user_key`, same format, is used as is). The table `access_v2` is still created but dormant: nothing reads or writes it, and the former `access` table is not migrated. After the upgrade every list starts empty on the site: ship the site and the add-on together, enable the entries, then grant access again.
 - Writes (non-GET) need the header `X-Addon: 1`, and `Origin` equal to `ALLOWED_ORIGIN` when set.
 
 ## Journal rules
 - Kept 1 day (`JOURNAL_DAYS`), purged at startup and on each journal write.
 - Pelican failures are written to the container log (stderr), one warning line per distinct reason and minute: `pelican_error kind=<denied|not_found|rejected|unreachable|unavailable|bad_response> status=<http> detail='...'`. `detail` is Pelican's own explanation when it gives one (a `denied` caused by the key's IP restriction shows the refused address), cut to 200 characters on one line; never the key or the request headers.
 - Stored: time, username, action, target, result, Pelican HTTP status.
-  - `access`: target = `<addon>:<account>`, result = the level, `revoked` or `removed`.
   - `power`: target = the signal (`start`, `stop`, `restart`), or `invalid` when the body had no usable signal; result = `ok` or the refusal reason: `invalid_request`, `confirmation_required`, `wrong_state`, `rate_limited`, `busy`, `timeout` (answered 504 `pelican_timeout`), `pelican_denied`, `pelican_not_found`, `pelican_unavailable`, `pelican_rejected`, `internal_error`.
   - `backup`: target = `create`; result as above (without the signal-related reasons).
   - The Pelican status column is filled only for `pelican_denied` (403), `pelican_not_found` (404) and `pelican_rejected` (400/409/422 on a POST); empty for `ok`, refusals before the call and every `pelican_unavailable` (5xx, redirect, timeout, bad shape, 400/409/422 on a GET).
@@ -113,7 +109,7 @@ Shown only when `CHESTSORT_FILE` is set. Structured editor:
 | Route | Who | Result |
 | --- | --- | --- |
 | GET `/me` | any logged-in | `username`, `is_admin`, `levels` (`{server, chestsort}`, null = none), `backup_filtered`, `chestsort` |
-| GET `/manifest` | any logged-in | `{api_version: 1, script, styles, addons: [{id, version, level, name{fr,en}, element}]}` filtered by the caller's levels (`[]` when none; `chestsort` only when on); `Cache-Control: no-cache`; schema in `contract/manifest.schema.json` |
+| GET `/manifest` | public (no cookie needed) | `{api_version: 2, entries: [{id, version, name{fr,en}, description{fr,en}, element, capabilities: ["tab"], script, styles}]}`, the same for everyone (the site filters by enabled flag and level; `chestsort` only when on); paths are add-on-relative (`/addon/main.js`), the site rewrites them to `/addon/<key>/...`; `Cache-Control: no-cache`; schema in `contract/manifest.schema.json`, checked by `tests/test_manifest_schema.py` |
 | GET `/status` | read+ | server status; 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable` |
 | POST `/power` | action | body `{"signal": "start"\|"stop"\|"restart", "confirm": true}` (`confirm` required for stop and restart); `{"signal", "result": "ok"}` |
 | GET `/backups` | read+ | list of backups (`uuid`, `name`, `bytes`, `created_at`, `completed_at`, `is_successful`, `is_locked`); 502 as `/status` |
@@ -125,10 +121,8 @@ Shown only when `CHESTSORT_FILE` is set. Structured editor:
 | GET `/chestsort/backups` | read+ | the 20 newest `.bak-` names |
 | POST `/chestsort/restore` | action | body `{name, base_hash, confirm: true}`; `{backup, hash}` |
 | GET `/journal` | read+ | the 500 newest journal rows, newest first |
-| GET `/{addon}/access` | admin | site accounts with their level on `server` or `chestsort`; 404 for another name or `chestsort` when off |
-| PUT `/{addon}/access/{user_key}` | admin | body `{"level": "read"\|"action"\|null}`; null revokes |
 
-Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unknown_user`; on the action routes also 422 `invalid_request` / `confirmation_required`, 409 `wrong_state` / `pelican_rejected` / `busy`, 429 `rate_limited` (with `Retry-After`), 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable`, 504 `pelican_timeout`, 500 `internal_error`.
+Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`; on the action routes also 422 `invalid_request` / `confirmation_required`, 409 `wrong_state` / `pelican_rejected` / `busy`, 429 `rate_limited` (with `Retry-After`), 502 `pelican_denied` / `pelican_not_found` / `pelican_unavailable`, 504 `pelican_timeout`, 500 `internal_error`.
 
 ## Environment
 | Variable | Default | Meaning |
@@ -148,7 +142,6 @@ Errors: 401 `unauthenticated`, 403 `forbidden`, 503 `site_unavailable`, 404 `unk
 
 ## Known gaps
 - Refused writes (missing header, wrong origin, 403) are not journalled.
-- No JSON line on stdout for access changes yet (the audit table only).
 - Without `ALLOWED_ORIGIN`, only the `X-Addon` header protects writes: set it.
 - Backup without `BACKUP_IGNORED`: Pelican would archive every file of the server (tens of GB). `POST /backups` then needs `confirm_full: true` in the body (strictly `true`), else 422 `full_backup_confirmation_required` (journalled, nothing sent to Pelican); the page asks with a dialog ("Sauvegarder tout le serveur ?"). `GET /me` returns `backup_filtered` (true when `BACKUP_IGNORED` is set; then no confirmation is asked).
 - Pelican response shapes: power (204), backup creation (200, `attributes` with `uuid`, `is_successful`, `is_locked`, `name`, `bytes`, `created_at`, `completed_at`) and the `ignored` field were checked against the panel's OpenAPI export of 2026-11-14 (client API), and the status and backup list worked on the real panel; power and backup creation on the real server are still to be tried by the maintainer. Parsing stays defensive and an unexpected shape is `PelicanUnavailable`. The backup list is paginated by Pelican (`meta.pagination`); only the first page is read (no page parameter is documented), so a server with many backups may not show the newest ones.

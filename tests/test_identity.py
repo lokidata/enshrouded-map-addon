@@ -13,14 +13,14 @@ SETTINGS = Settings(
     pelican_server_id="abcd1234",
     site_url="http://site.example.test/",
 )
-ME = {"username": "alice", "is_admin": False, "id": 7, "created_at": "2026-01-02T03:04:05"}
+ME = {"user_key": "7:2026-01-02T03:04:05", "username": "alice", "is_admin": False, "level": "read"}
 
 
 def call(handler: Any, cookie: str | None = "session=abc") -> Identity:
     async def run() -> Identity:
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:
-            return await who_am_i(cookie, client, SETTINGS)
+            return await who_am_i(cookie, client, SETTINGS, "server")
 
     return asyncio.run(run())
 
@@ -29,25 +29,32 @@ def json_handler(body: Any, status: int = 200) -> Any:
     return lambda request: httpx.Response(status, json=body)
 
 
-def test_valid_identity_and_only_cookie_forwarded() -> None:
+def test_200_maps_the_site_answer_and_only_cookie_is_forwarded() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(200, json=ME)
 
-    assert call(handler) == Identity("7:2026-01-02T03:04:05", "alice", False)
+    assert call(handler) == Identity("7:2026-01-02T03:04:05", "alice", False, "read")
     req = seen[0]
-    assert str(req.url) == "http://site.example.test/api/v1/auth/me"
+    assert str(req.url) == "http://site.example.test/api/v1/addons/server/me"
     assert req.headers["cookie"] == "session=abc"
     assert "authorization" not in req.headers and "x-addon" not in req.headers
 
 
-def test_logged_out_or_401_is_unauthenticated() -> None:
-    with pytest.raises(Unauthenticated):
-        call(json_handler({**ME, "username": None}))
+def test_401_is_unauthenticated() -> None:
     with pytest.raises(Unauthenticated):
         call(json_handler({}, 401))
+
+
+def test_403_is_an_identity_without_level() -> None:
+    assert call(json_handler({"detail": "forbidden"}, 403)).level is None
+
+
+def test_level_null_and_action_are_kept() -> None:
+    assert call(json_handler({**ME, "level": None})).level is None
+    assert call(json_handler({**ME, "level": "action"})).level == "action"
 
 
 def test_no_cookie_makes_no_call() -> None:
@@ -69,8 +76,9 @@ def test_site_failures_are_unavailable() -> None:
         lambda r: httpx.Response(200, content=b"<html>"),
         lambda r: httpx.Response(302, headers={"location": "/login"}),
         lambda r: httpx.Response(200, json=["x"]),
-        json_handler({"username": "a", "is_admin": False, "created_at": "t"}),
-        json_handler({"username": "a", "is_admin": False, "id": 1}),
+        json_handler({**ME, "user_key": None}),
+        json_handler({**ME, "username": ""}),
+        json_handler({**ME, "level": "owner"}),
     ]
     for handler in bad:
         with pytest.raises(SiteUnavailable):

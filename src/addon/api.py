@@ -31,7 +31,7 @@ from addon.pelican import (
     PelicanRejected,
     PelicanUnavailable,
 )
-from addon.store import Addon, Level, Store
+from addon.store import Addon, Store
 from addon.throttle import Throttle
 
 log = logging.getLogger("addon.api")
@@ -55,10 +55,6 @@ ROLLBACK_TIMEOUT = 10  # fresh budget for the rollback after ACTION_TIMEOUT fire
 MAX_BYTES = 1_000_000  # chestsort file and request bodies
 BACKUPS_SHOWN = 20
 NEEDS_STATE = {"start": "offline", "stop": "running", "restart": "running"}
-
-
-class AccessBody(BaseModel):
-    level: Level | None  # required; null revokes
 
 
 class PowerBody(BaseModel):
@@ -95,95 +91,55 @@ def check_write(request: Request) -> None:
         raise HTTPException(403, "forbidden")
 
 
-async def current(request: Request) -> Identity:
+ADDONS: tuple[Addon, ...] = ("server", "chestsort")
+
+
+async def identity_for(request: Request, entry: Addon) -> Identity:
+    """The caller as the site sees them for one entry (one site call, the cookie relayed)."""
     state = request.app.state
     try:
-        return await who_am_i(request.headers.get("cookie"), state.http, state.settings)
+        return await who_am_i(request.headers.get("cookie"), state.http, state.settings, entry)
     except Unauthenticated as exc:
         raise HTTPException(401, "unauthenticated") from exc
     except SiteUnavailable as exc:
         raise HTTPException(503, "site_unavailable") from exc
 
 
-Current = Annotated[Identity, Depends(current)]
-
-
-ADDONS: tuple[Addon, ...] = ("server", "chestsort")
-
-
-def level_of(request: Request, who: Identity, addon: Addon) -> Level | None:
-    return "action" if who.is_admin else request.app.state.store.level_of(addon, who.key)
-
-
-def enabled(request: Request, addon: Addon) -> bool:
-    return addon == "server" or request.app.state.settings.chestsort_file is not None
-
-
-def reader(addon: Addon) -> Callable[..., Identity]:
-    def require_read(request: Request, who: Current) -> Identity:
-        if level_of(request, who, addon) is None:
+def reader(addon: Addon) -> Callable[..., Awaitable[Identity]]:
+    async def require_read(request: Request) -> Identity:
+        who = await identity_for(request, addon)
+        if who.level is None:
             raise HTTPException(403, "forbidden")
         return who
 
     return require_read
 
 
-def actor(addon: Addon) -> Callable[..., Identity]:
-    def require_action(request: Request, who: Current) -> Identity:
-        if level_of(request, who, addon) != "action":
+def actor(addon: Addon) -> Callable[..., Awaitable[Identity]]:
+    async def require_action(request: Request) -> Identity:
+        who = await identity_for(request, addon)
+        if who.level != "action":
             raise HTTPException(403, "forbidden")
         return who
 
     return require_action
 
 
-def require_admin(who: Current) -> Identity:
-    if not who.is_admin:
-        raise HTTPException(403, "forbidden")
-    return who
-
-
-def known_addon(request: Request, addon: str) -> Addon:
-    if addon not in ADDONS or not enabled(request, addon):
-        raise HTTPException(404, "unknown_addon")
-    return addon
-
-
 Reader = Annotated[Identity, Depends(reader("server"))]  # the Server add-on
 Actor = Annotated[Identity, Depends(actor("server"))]
 ChestReader = Annotated[Identity, Depends(reader("chestsort"))]
 ChestActor = Annotated[Identity, Depends(actor("chestsort"))]
-Admin = Annotated[Identity, Depends(require_admin)]
 router = APIRouter(prefix="/addon/api", dependencies=[Depends(check_write)])
 
 
-async def site_users(request: Request) -> dict[str, str]:
-    """user_key -> username, from the site (admin-only route, the admin's cookie relayed)."""
-    state = request.app.state
-    try:
-        resp = await state.http.get(
-            f"{state.settings.site_url.rstrip('/')}/api/v1/auth/users",
-            headers={"Cookie": request.headers.get("cookie", "")},
-            timeout=state.settings.pelican_timeout,
-            follow_redirects=False,
-        )
-        data: Any = resp.json() if resp.status_code == 200 else None
-        users: dict[str, str] = {}
-        for u in data:
-            if u.get("id") is None or not u.get("created_at"):
-                raise ValueError("id and created_at are required for a stable key")
-            users[f"{u['id']}:{u['created_at']}"] = str(u["username"])
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
-        raise HTTPException(503, "site_unavailable") from exc
-    return users
-
-
 @router.get("/me")
-def me(request: Request, who: Current) -> dict[str, Any]:
+async def me(request: Request) -> dict[str, Any]:
+    found = [await identity_for(request, a) for a in ADDONS]
+    named = next((w for w in found if w.username), found[0])  # a 403 carries no name
     return {
-        "username": who.username,
-        "is_admin": who.is_admin,
-        "levels": {a: level_of(request, who, a) for a in ADDONS},
+        "username": named.username,
+        "is_admin": any(w.is_admin for w in found),
+        "levels": {a: w.level for a, w in zip(ADDONS, found, strict=True)},
         "backup_filtered": bool(request.app.state.settings.backup_ignored),
         "chestsort": request.app.state.settings.chestsort_file is not None,
     }
@@ -195,11 +151,10 @@ def static_folder(cfg: Settings) -> Path:
 
 
 @router.get("/manifest")
-def manifest(request: Request, who: Current) -> JSONResponse:
+def manifest(request: Request) -> JSONResponse:
     cfg: Settings = request.app.state.settings
-    levels: dict[str, Level | None] = {a: level_of(request, who, a) for a in ADDONS}
     return JSONResponse(
-        build_manifest(levels, cfg, static_folder(cfg)), headers={"Cache-Control": "no-cache"}
+        build_manifest(cfg, static_folder(cfg)), headers={"Cache-Control": "no-cache"}
     )
 
 
@@ -220,37 +175,6 @@ def journal(request: Request, who: Reader) -> list[dict[str, Any]]:
     if who.is_admin:
         return rows
     return [{k: r[k] for k in PUBLIC_JOURNAL} for r in rows]
-
-
-@router.get("/{addon}/access")
-async def list_access(request: Request, addon: str, who: Admin) -> list[dict[str, Any]]:
-    name = known_addon(request, addon)
-    store: Store = request.app.state.store
-    users = await site_users(request)
-    names = {r.user_key: r.username for r in store.list_access(name)}
-    for key in store.prune_missing(name, set(users)):
-        store.log(who.username, "access", f"{name}:{names[key]}", "removed")
-    levels = {r.user_key: r.level for r in store.list_access(name)}
-    return [{"user_key": k, "username": n, "level": levels.get(k)} for k, n in users.items()]
-
-
-@router.put("/{addon}/access/{user_key}")
-async def set_access(
-    request: Request, addon: str, user_key: str, body: AccessBody, who: Admin
-) -> dict[str, Any]:
-    name = known_addon(request, addon)
-    if user_key == who.key:
-        raise HTTPException(400, "administrator_is_implicit")
-    username = (await site_users(request)).get(user_key)
-    if username is None:
-        raise HTTPException(404, "unknown_user")
-    store: Store = request.app.state.store
-    if body.level is None:
-        store.revoke(name, user_key)
-    else:
-        store.grant(name, user_key, username, body.level, who.username)
-    store.log(who.username, "access", f"{name}:{username}", body.level or "revoked")
-    return {"user_key": user_key, "username": username, "level": body.level}
 
 
 def pelican_refusal(exc: Exception) -> Refused:

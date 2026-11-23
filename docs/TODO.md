@@ -1,12 +1,15 @@
 # TODO
 
-Open work of the add-on (deliveries 1 to 4 are done: status, access list, power, backups, chestsort editor, integration into the site as custom elements).
+Open work of the add-on (deliveries 1 to 4 are done: status, access managed by the site, power, backups, chestsort editor, integration into the site as custom elements).
 
 ## Delivery 3: chestsort categories editor
 - [x] View and edit `chestsort_categories.json` with validation, diff, dated `.bak` copies and restore; off unless `CHESTSORT_FILE` is set. To do by the maintainer: try it on a copy of the file first, never in place.
 
 ## Delivery 4: integration into the site
-- [x] Two custom elements mounted by the site, manifest, one access list per add-on (managed in the site's Administration dialog), site design system, FR/EN/DE; chestsort editor with item catalogue, picker popup, "one item, one category" and file download.
+- [x] Two custom elements mounted by the site, manifest, access managed by the site (Administration dialog), site design system, FR/EN/DE; chestsort editor with item catalogue, picker popup, "one item, one category" and file download.
+
+## SDK phase 1
+- [x] Manifest v2 (static, per-entry `script`/`styles`), identity and level from the site's `/api/v1/addons/<entry>/me`, access lists removed from the add-on. Awaiting local testing with the site branch `feat/addon-sdk-phase1`.
 
 ## Later
 - [ ] **Chestsort wildcards and removals**: the mod accepts `Food_T1_*` and a leading `-`; the editor treats them as plain names (no picture, no duplicate detection).

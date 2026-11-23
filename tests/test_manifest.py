@@ -1,4 +1,3 @@
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -11,8 +10,8 @@ from addon.api import create_app
 from addon.config import Settings
 from addon.manifest import build_manifest
 
-SCHEMA = json.loads((Path(__file__).parents[1] / "contract" / "manifest.schema.json").read_text())
-ITEM = SCHEMA["properties"]["addons"]["items"]["properties"]
+PATH = re.compile(r"(?!.*(\.\.|//))/addon/[A-Za-z0-9._/-]{1,100}")
+ENTRY_KEYS = {"id", "version", "name", "description", "element", "capabilities", "script", "styles"}
 
 
 def settings(tmp_path: Path, chest: bool = True) -> Settings:
@@ -28,15 +27,17 @@ def settings(tmp_path: Path, chest: bool = True) -> Settings:
 
 
 def conforms(m: dict[str, Any]) -> bool:
-    """The parts of the schema that matter, checked by hand (no jsonschema dependency)."""
-    path = re.compile(SCHEMA["$defs"]["path"]["pattern"])
-    ok = set(m) == set(SCHEMA["required"]) and m["api_version"] == 1
-    ok = ok and bool(path.match(m["script"])) and bool(path.match(m["styles"]))
-    for a in m["addons"]:
-        ok = ok and set(a) == set(ITEM) and a["level"] in ("read", "action")
-        ok = ok and bool(re.fullmatch(ITEM["id"]["pattern"], a["id"]))
-        ok = ok and bool(re.fullmatch(ITEM["element"]["pattern"], a["element"]))
-        ok = ok and set(a["name"]) == {"fr", "en"}
+    """What the site's `parse_manifest` requires, checked by hand."""
+    ok = set(m) == {"api_version", "entries"} and m["api_version"] == 2
+    for e in m["entries"]:
+        ok = ok and set(e) == ENTRY_KEYS and e["capabilities"] == ["tab"]
+        ok = ok and bool(re.fullmatch(r"[a-z0-9-]{1,20}", e["id"]))
+        ok = ok and bool(re.fullmatch(r"addon-[a-z0-9-]{1,30}", e["element"]))
+        ok = ok and bool(PATH.fullmatch(e["script"])) and bool(PATH.fullmatch(e["styles"]))
+        ok = ok and 1 <= len(e["version"]) <= 20
+        for field, limit in (("name", 40), ("description", 200)):
+            ok = ok and set(e[field]) == {"fr", "en"}
+            ok = ok and all(1 <= len(v) <= limit for v in e[field].values())
     return ok
 
 
@@ -49,23 +50,15 @@ def web(tmp_path: Path) -> Path:
     return d
 
 
-def test_manifest_validates_against_schema(tmp_path: Path, web: Path) -> None:
-    m = build_manifest({"server": "read", "chestsort": "action"}, settings(tmp_path), web)
-    assert conforms(m) and [a["id"] for a in m["addons"]] == ["server", "chestsort"]
-    assert [a["level"] for a in m["addons"]] == ["read", "action"]
-
-
-def test_manifest_filters_by_level(tmp_path: Path, web: Path) -> None:
-    m = build_manifest({"server": None, "chestsort": "read"}, settings(tmp_path), web)
-    assert [a["id"] for a in m["addons"]] == ["chestsort"]
-    assert (
-        build_manifest({"server": None, "chestsort": None}, settings(tmp_path), web)["addons"] == []
-    )
+def test_manifest_lists_both_entries(tmp_path: Path, web: Path) -> None:
+    m = build_manifest(settings(tmp_path), web)
+    assert conforms(m) and [e["id"] for e in m["entries"]] == ["server", "chestsort"]
+    assert {e["script"] for e in m["entries"]} == {"/addon/main.js"}
 
 
 def test_chestsort_absent_without_file(tmp_path: Path, web: Path) -> None:
-    m = build_manifest({"server": "read", "chestsort": "action"}, settings(tmp_path, False), web)
-    assert [a["id"] for a in m["addons"]] == ["server"]
+    m = build_manifest(settings(tmp_path, False), web)
+    assert conforms(m) and [e["id"] for e in m["entries"]] == ["server"]
 
 
 def test_script_and_styles_found_in_static_dir(tmp_path: Path, web: Path) -> None:
@@ -73,29 +66,25 @@ def test_script_and_styles_found_in_static_dir(tmp_path: Path, web: Path) -> Non
     (web / "styles.css").unlink()
     (web / "main-ABC123.js").write_text("1")
     (web / "styles-XYZ.css").write_text("a{}")
-    m = build_manifest({"server": "read", "chestsort": None}, settings(tmp_path), web)
-    assert (m["script"], m["styles"]) == ("/addon/main-ABC123.js", "/addon/styles-XYZ.css")
+    m = build_manifest(settings(tmp_path), web)
+    e = m["entries"][0]
+    assert (e["script"], e["styles"]) == ("/addon/main-ABC123.js", "/addon/styles-XYZ.css")
     assert conforms(m)
 
 
-def test_manifest_route_401_and_no_cache(tmp_path: Path, web: Path) -> None:
-    sessions = {"alice": {"id": 7, "username": "a", "is_admin": True, "created_at": "2026-01-01"}}
-
+def test_manifest_route_is_public_and_not_cached(tmp_path: Path, web: Path) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
-        who = req.headers.get("cookie", "").removeprefix("session=")
-        return httpx.Response(200, json=sessions[who]) if who in sessions else httpx.Response(401)
+        raise AssertionError("the manifest must not call the site")
 
     with TestClient(create_app(settings(tmp_path), httpx.MockTransport(handler))) as c:
-        assert c.get("/addon/api/manifest").status_code == 401
-        r = c.get("/addon/api/manifest", headers={"Cookie": "session=alice"})
+        r = c.get("/addon/api/manifest")
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
-        assert conforms(r.json()) and len(r.json()["addons"]) == 2
+        assert conforms(r.json()) and len(r.json()["entries"]) == 2
         js = c.get("/addon/main.js")
         assert js.status_code == 200 and js.headers["cache-control"] == "no-cache"
 
 
-def test_schema_path_rule_refuses_traversal_and_double_slash() -> None:
-    path = re.compile(SCHEMA["$defs"]["path"]["pattern"])
-    for bad in ("/addon/../x", "/addon//x", "//x", "https://x/y.js", "/other/x.js"):
-        assert not path.match(bad)
-    assert path.match("/addon/main.js")
+def test_manifest_route_omits_chestsort_when_unset(tmp_path: Path, web: Path) -> None:
+    app = create_app(settings(tmp_path, False), httpx.MockTransport(lambda r: httpx.Response(500)))
+    with TestClient(app) as c:
+        assert [e["id"] for e in c.get("/addon/api/manifest").json()["entries"]] == ["server"]

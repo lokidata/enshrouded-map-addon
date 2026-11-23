@@ -12,13 +12,13 @@ The add-on is one more service of the **site's own stack** (same networks, one d
 ## 2. Edit the site stack
 
 - `api` and `web`, `environment`: add `ADDON_URL: ${ADDON_URL:-}`.
-- `web`: optionally add `addon: {condition: service_healthy}` under `depends_on` (starts the add-on first). Not required: the site resolves the add-on's name at request time (needs the site image from enshrouded-map#80 or later), so a missing add-on only makes `/addon/` answer 502.
+- `web`: optionally add `addon: {condition: service_healthy}` under `depends_on` (starts the add-on first). Not required: the site resolves the add-on's name at request time (needs the site image from enshrouded-map#80 or later), so a missing add-on only makes `/addon/<key>/` (for example `/addon/main/`) answer 502.
 - Add the `addon` service from `service.example.yml`; create its data folder: `mkdir -p /opt/enshrouded/addon && chown 10001:10001 /opt/enshrouded/addon`.
 - Stack variables: `ADDON_IMAGE_TAG` (for example `0.4.1`), `ADDON_URL=http://addon:8000`, `PELICAN_URL`, `PELICAN_SERVER_ID`, `PELICAN_API_KEY`, `ALLOWED_ORIGIN` (the origin players open).
 
 ## 3. Check
 
-As the administrator: the menu shows "Serveur de jeu" and `/addon/` shows the status. `pelican_denied`: key IP restriction, user permissions or panel name resolution (hairpin NAT: add a local DNS record or `extra_hosts`). `pelican_unavailable`: panel unreachable or unexpected answer.
+As the administrator: the menu shows "Serveur de jeu" and `/addon/main/` shows the status. `pelican_denied`: key IP restriction, user permissions or panel name resolution (hairpin NAT: add a local DNS record or `extra_hosts`). `pelican_unavailable`: panel unreachable or unexpected answer.
 
 ## Turning it off
 

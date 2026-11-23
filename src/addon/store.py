@@ -1,4 +1,4 @@
-"""SQLite store: access list and short-lived audit journal (stdlib only)."""
+"""SQLite store: short-lived audit journal (`access_v2` is dormant, levels live in the site)."""
 
 import sqlite3
 import threading
@@ -20,15 +20,6 @@ CREATE TABLE IF NOT EXISTS audit (
 
 
 @dataclass(frozen=True)
-class AccessRow:
-    user_key: str
-    username: str
-    level: Level
-    by: str
-    at: str
-
-
-@dataclass(frozen=True)
 class JournalRow:
     id: int
     at: str
@@ -47,42 +38,6 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
         self.purge(datetime.now(UTC), journal_days)
-
-    def grant(self, addon: Addon, user_key: str, username: str, level: Level, by: str) -> None:
-        with self._lock:
-            self._db.execute(
-                "INSERT OR REPLACE INTO access_v2 (addon, user_key, username, level, by, at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (addon, user_key, username, level, by, datetime.now(UTC).isoformat()),
-            )
-
-    def revoke(self, addon: Addon, user_key: str) -> None:
-        with self._lock:
-            self._db.execute(
-                "DELETE FROM access_v2 WHERE addon = ? AND user_key = ?", (addon, user_key)
-            )
-
-    def level_of(self, addon: Addon, user_key: str) -> Level | None:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT level FROM access_v2 WHERE addon = ? AND user_key = ?", (addon, user_key)
-            ).fetchone()
-        return row[0] if row else None
-
-    def list_access(self, addon: Addon) -> list[AccessRow]:
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT user_key, username, level, by, at FROM access_v2"
-                " WHERE addon = ? ORDER BY username",
-                (addon,),
-            ).fetchall()
-        return [AccessRow(*r) for r in rows]
-
-    def prune_missing(self, addon: Addon, present_keys: set[str]) -> list[str]:
-        removed = [r.user_key for r in self.list_access(addon) if r.user_key not in present_keys]
-        for key in removed:
-            self.revoke(addon, key)
-        return removed
 
     def log(
         self, username: str, action: str, target: str, result: str, status: int | None = None

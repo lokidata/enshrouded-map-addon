@@ -1,4 +1,5 @@
 import { Component, effect, inject, input } from '@angular/core';
+import { ApiBase } from '../core/api';
 import { I18n, T } from '../core/i18n';
 import { Session } from '../core/session';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -47,8 +48,12 @@ export class Mods {
   protected readonly i18n = inject(I18n);
   /** Set by the site on the element. */
   readonly lang = input('fr');
+  /** The public base of this add-on (`/addon/<key>/`), set by the site; checked by ApiBase. */
+  readonly base = input<string>();
+  private readonly apiBase = inject(ApiBase);
 
   constructor() {
     effect(() => this.i18n.setLang(this.lang()));
+    effect(() => this.apiBase.set(this.base()));
   }
 }
