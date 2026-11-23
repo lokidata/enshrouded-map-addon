@@ -1,16 +1,25 @@
-"""The manifest the site reads to list the add-ons the caller may use (contract api_version 1)."""
+"""The manifest the site reads (api_version 2). Public: the site filters by level."""
 
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 from addon.config import Settings
-from addon.store import Level
 
-API_VERSION = 1
+API_VERSION = 2
 NAMES = {
     "server": {"fr": "Serveur", "en": "Server"},
     "chestsort": {"fr": "Coffres", "en": "Chests"},
+}
+DESCRIPTIONS = {
+    "server": {
+        "fr": "Etat du serveur, sauvegardes et redemarrage.",
+        "en": "Server status, backups and restart.",
+    },
+    "chestsort": {
+        "fr": "Edition des categories de tri des coffres.",
+        "en": "Edit the chest sorting categories.",
+    },
 }
 ELEMENTS = {"server": "addon-server", "chestsort": "addon-chestsort"}
 
@@ -30,26 +39,21 @@ def _find(folder: Path, exact: str, hashed: str) -> str:
     return f"/addon/{found[0] if found else exact}"
 
 
-def build_manifest(
-    levels: dict[str, Level | None], settings: Settings, static_dir: Path
-) -> dict[str, Any]:
-    addons = []
-    for addon_id, element in ELEMENTS.items():
-        level = levels.get(addon_id)
-        if level is None or (addon_id == "chestsort" and settings.chestsort_file is None):
-            continue
-        addons.append(
-            {
-                "id": addon_id,
-                "version": _own_version(),
-                "level": level,
-                "name": NAMES[addon_id],
-                "element": element,
-            }
-        )
-    return {
-        "api_version": API_VERSION,
-        "script": _find(static_dir, "main.js", "main-*.js"),
-        "styles": _find(static_dir, "styles.css", "styles-*.css"),
-        "addons": addons,
-    }
+def build_manifest(settings: Settings, static_dir: Path) -> dict[str, Any]:
+    script = _find(static_dir, "main.js", "main-*.js")
+    styles = _find(static_dir, "styles.css", "styles-*.css")
+    entries = [
+        {
+            "id": entry_id,
+            "version": _own_version(),
+            "name": NAMES[entry_id],
+            "description": DESCRIPTIONS[entry_id],
+            "element": element,
+            "capabilities": ["tab"],
+            "script": script,
+            "styles": styles,
+        }
+        for entry_id, element in ELEMENTS.items()
+        if entry_id != "chestsort" or settings.chestsort_file is not None
+    ]
+    return {"api_version": API_VERSION, "entries": entries}

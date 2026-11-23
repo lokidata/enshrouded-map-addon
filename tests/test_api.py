@@ -50,11 +50,12 @@ class Fake:
 
     def __init__(self) -> None:
         self.sessions: dict[str, dict[str, Any]] = {"admin": ADMIN, "alice": ALICE, "bob": BOB}
-        self.users = [ALICE, BOB]  # the site's /auth/users never lists the administrator
+        # (entry, session name) -> level; the administrator is implicit "action" on every entry
+        self.levels: dict[tuple[str, str], str] = {}
+        self.site_calls: list[tuple[str, str]] = []  # (entry, cookie) of every site /me call
         self.site_down = False
         self.pelican_status = 200
         self.pelican_calls = 0
-        self.users_cookies: list[str | None] = []
         self.state = "running"
         self.power_status = 204
         self.signals: list[str] = []
@@ -113,13 +114,18 @@ class Fake:
         if self.site_down:
             return httpx.Response(500)
         cookie = request.headers.get("cookie", "")
-        if request.url.path == "/api/v1/auth/users":
-            self.users_cookies.append(cookie)
-            return httpx.Response(
-                200, json=[{k: u[k] for k in ("id", "username", "created_at")} for u in self.users]
-            )
-        user = self.sessions.get(cookie.removeprefix("session="))
-        return httpx.Response(200, json=user or {"username": None, "is_admin": False})
+        entry = request.url.path.split("/")[4]  # /api/v1/addons/<entry>/me
+        self.site_calls.append((entry, cookie))
+        name = cookie.removeprefix("session=")
+        user = self.sessions.get(name)
+        if user is None:
+            return httpx.Response(401)
+        level = "action" if user["is_admin"] else self.levels.get((entry, name))
+        if level is None:
+            return httpx.Response(403, json={"detail": "forbidden"})
+        key = f"{user['id']}:{user['created_at']}"
+        out = {"user_key": key, "username": user["username"], "is_admin": user["is_admin"]}
+        return httpx.Response(200, json={**out, "level": level})
 
     def file_op(self, request: httpx.Request) -> httpx.Response:
         op = request.url.path.rsplit("/", 1)[1]
@@ -170,6 +176,7 @@ def client(fake: Fake, tmp_path: Path) -> Iterator[TestClient]:
         backup_ignored="/*\n!/savegame/\n!/savegame/**",
     )
     app = create_app(settings, httpx.MockTransport(fake.handle))
+    app.state.fake = fake
     with TestClient(app) as c:
         yield c
 
@@ -178,15 +185,18 @@ def as_(who: str, extra: dict[str, str] | None = None) -> dict[str, str]:
     return {"Cookie": f"session={who}", **(extra or {})}
 
 
-def grant(client: TestClient, key: str, level: str | None, addon: str = "server") -> httpx.Response:
-    resp: httpx.Response = client.put(
-        f"/addon/api/{addon}/access/{key}", json={"level": level}, headers=as_("admin", WRITE)
-    )
-    return resp
+def grant(client: TestClient, key: str, level: str | None, addon: str = "server") -> None:
+    """Set a level in the fake site (levels live in the site, not in the add-on)."""
+    fake: Fake = client.app.state.fake  # type: ignore[attr-defined]
+    name = {ALICE_KEY: "alice", BOB_KEY: "bob"}[key]
+    if level is None:
+        fake.levels.pop((addon, name), None)
+    else:
+        fake.levels[(addon, name)] = level
 
 
 def test_no_cookie_is_401(client: TestClient) -> None:
-    for path in ("/me", "/status", "/journal", "/server/access"):
+    for path in ("/me", "/status", "/journal"):
         assert client.get(f"/addon/api{path}").status_code == 401
 
 
@@ -197,7 +207,7 @@ def test_logged_out_cookie_is_401(client: TestClient) -> None:
 def test_unknown_user_has_no_level_and_no_status(client: TestClient, fake: Fake) -> None:
     me = client.get("/addon/api/me", headers=as_("alice"))
     assert me.json() == {
-        "username": "alice",
+        "username": "",  # the site's 403 names nobody
         "is_admin": False,
         "levels": {"server": None, "chestsort": None},
         "backup_filtered": True,
@@ -209,7 +219,7 @@ def test_unknown_user_has_no_level_and_no_status(client: TestClient, fake: Fake)
 
 
 def test_read_user_sees_status_but_cannot_manage(client: TestClient) -> None:
-    assert grant(client, ALICE_KEY, "read").status_code == 200
+    grant(client, ALICE_KEY, "read")
     assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] == "read"
     status = client.get("/addon/api/status", headers=as_("alice"))
     assert status.status_code == 200
@@ -221,16 +231,13 @@ def test_read_user_sees_status_but_cannot_manage(client: TestClient) -> None:
         "disk_bytes": 3,
         "uptime_ms": 4,
     }
-    put = client.put(
-        f"/addon/api/server/access/{BOB_KEY}", json={"level": "read"}, headers=as_("alice", WRITE)
-    )
-    assert put.status_code == 403
-    assert client.get("/addon/api/server/access", headers=as_("alice")).status_code == 403
+    assert post(client, "/power", "alice", json={"signal": "start"}).status_code == 403
 
 
 def test_read_user_journal_has_only_public_fields(client: TestClient) -> None:
     grant(client, ALICE_KEY, "read")
     grant(client, BOB_KEY, "read")
+    client.app.state.store.log("root", "power", "start", "ok")  # type: ignore[attr-defined]
     rows = client.get("/addon/api/journal", headers=as_("alice")).json()
     assert rows and all(set(r) == {"at", "username", "action", "target", "result"} for r in rows)
 
@@ -244,46 +251,47 @@ def test_admin_has_action_and_everything(client: TestClient) -> None:
         "backup_filtered": True,
         "chestsort": False,
     }
-    for path in ("/status", "/journal", "/server/access"):
+    for path in ("/status", "/journal"):
         assert client.get(f"/addon/api{path}", headers=as_("admin")).status_code == 200
 
 
-def test_access_lists_site_users_with_levels_and_relays_cookie(
-    client: TestClient, fake: Fake
-) -> None:
-    grant(client, ALICE_KEY, "action")
-    rows = client.get("/addon/api/server/access", headers=as_("admin")).json()
-    assert rows == [
-        {"user_key": ALICE_KEY, "username": "alice", "level": "action"},
-        {"user_key": BOB_KEY, "username": "bob", "level": None},
-    ]
-    assert fake.users_cookies[-1] == "session=admin"
+def test_access_routes_are_gone(cs: TestClient) -> None:
+    for addon in ("server", "chestsort", "nope"):
+        for who in ("admin", "alice"):
+            assert cs.get(f"/addon/api/{addon}/access", headers=as_(who)).status_code == 404
+        put = cs.put(
+            f"/addon/api/{addon}/access/{ALICE_KEY}",
+            json={"level": "read"},
+            headers=as_("admin", WRITE),
+        )
+        assert put.status_code in (404, 405)
+        assert grant_state(cs) == {}
 
 
-def test_null_level_revokes(client: TestClient) -> None:
-    grant(client, ALICE_KEY, "read")
-    assert grant(client, ALICE_KEY, None).status_code == 200
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
+def grant_state(client: TestClient) -> dict[tuple[str, str], str]:
+    fake: Fake = client.app.state.fake  # type: ignore[attr-defined]
+    return fake.levels
 
 
-def test_write_without_x_addon_is_403(client: TestClient) -> None:
-    put = client.put(
-        f"/addon/api/server/access/{ALICE_KEY}",
-        json={"level": "read"},
+def test_write_without_x_addon_is_403(client: TestClient, fake: Fake) -> None:
+    resp = client.post(
+        "/addon/api/power",
+        json={"signal": "start"},
         headers=as_("admin", {"Origin": "https://site.example.test"}),
     )
-    assert put.status_code == 403
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
+    assert resp.status_code == 403
+    assert fake.signals == []
 
 
-def test_write_with_wrong_or_missing_origin_is_403(client: TestClient) -> None:
+def test_write_with_wrong_or_missing_origin_is_403(client: TestClient, fake: Fake) -> None:
     for origin in ({"Origin": "https://evil.example.test"}, {}):
-        put = client.put(
-            f"/addon/api/server/access/{ALICE_KEY}",
-            json={"level": "read"},
+        resp = client.post(
+            "/addon/api/power",
+            json={"signal": "start"},
             headers=as_("admin", {"X-Addon": "1", **origin}),
         )
-        assert put.status_code == 403
+        assert resp.status_code == 403
+    assert fake.signals == []
 
 
 def test_site_down_is_503(client: TestClient, fake: Fake) -> None:
@@ -305,13 +313,9 @@ def test_pelican_errors_are_502(client: TestClient, fake: Fake, status: int, det
     assert client.get("/addon/api/journal", headers=as_("admin")).json() == []
 
 
-def test_status_polls_are_not_journalled_but_access_changes_are(client: TestClient) -> None:
-    grant(client, ALICE_KEY, "read")
+def test_status_polls_are_not_journalled(client: TestClient) -> None:
     client.get("/addon/api/status", headers=as_("admin"))
-    rows = client.get("/addon/api/journal", headers=as_("admin")).json()
-    assert [(r["username"], r["action"], r["target"], r["result"]) for r in rows] == [
-        ("root", "access", "server:alice", "read"),
-    ]
+    assert client.get("/addon/api/journal", headers=as_("admin")).json() == []
 
 
 def test_journal_returns_at_most_500_newest(client: TestClient) -> None:
@@ -323,47 +327,42 @@ def test_journal_returns_at_most_500_newest(client: TestClient) -> None:
     assert rows[0]["target"] == "u504"
 
 
-def test_other_admin_missing_from_site_list_is_404(client: TestClient, fake: Fake) -> None:
+def test_other_admin_is_implicit_action(client: TestClient, fake: Fake) -> None:
     fake.sessions["admin2"] = {**ADMIN, "id": 2, "username": "root2"}
-    key = "2:2026-01-01T00:00:00"
-    assert grant(client, key, "read").status_code == 404
     assert client.get("/addon/api/me", headers=as_("admin2")).json()["levels"]["server"] == "action"
 
 
-def test_access_prunes_users_missing_from_site_and_journals(client: TestClient, fake: Fake) -> None:
+def test_level_follows_the_site_answer(client: TestClient, fake: Fake) -> None:
     grant(client, ALICE_KEY, "read")
-    fake.users = [BOB]
-    rows = client.get("/addon/api/server/access", headers=as_("admin")).json()
-    assert [r["username"] for r in rows] == ["bob"]
-    fake.users = [ALICE, BOB]
-    assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
-    first = client.get("/addon/api/journal", headers=as_("admin")).json()[0]
-    assert (first["action"], first["target"], first["result"]) == (
-        "access",
-        "server:alice",
-        "removed",
-    )
-
-
-def test_recreated_account_with_same_id_has_no_level(client: TestClient, fake: Fake) -> None:
-    grant(client, ALICE_KEY, "read")
-    fake.sessions["alice"] = {**ALICE, "created_at": "2026-05-05T00:00:00"}
+    assert client.get("/addon/api/status", headers=as_("alice")).status_code == 200
+    grant(client, ALICE_KEY, None)  # the site says 403 now: no cache in the add-on
     assert client.get("/addon/api/me", headers=as_("alice")).json()["levels"]["server"] is None
     assert client.get("/addon/api/status", headers=as_("alice")).status_code == 403
 
 
-def test_put_unknown_user_is_404(client: TestClient) -> None:
-    assert grant(client, "99:2026-01-01T00:00:00", "read").status_code == 404
-    assert grant(client, "7:2026-05-05T00:00:00", "read").status_code == 404
+def test_one_server_request_makes_one_site_call(client: TestClient, fake: Fake) -> None:
+    assert client.get("/addon/api/status", headers=as_("admin")).status_code == 200
+    assert fake.site_calls == [("server", "session=admin")]
+    assert client.get("/addon/api/journal", headers=as_("admin")).status_code == 200
+    assert len(fake.site_calls) == 2
+    assert post(client, "/power", json={"signal": "start"}).status_code in (200, 409)
+    assert [e for e, _ in fake.site_calls] == ["server"] * 3
 
 
-def test_admin_cannot_be_given_a_level(client: TestClient) -> None:
-    assert grant(client, "1:2026-01-01T00:00:00", "read").status_code == 400
-    assert grant(client, "1:2026-01-01T00:00:00", None).status_code == 400
+def test_reader_refuses_no_level_and_accepts_read_or_action(client: TestClient) -> None:
+    assert client.get("/addon/api/status", headers=as_("alice")).status_code == 403
+    grant(client, ALICE_KEY, "read")
+    assert client.get("/addon/api/status", headers=as_("alice")).status_code == 200
+    grant(client, ALICE_KEY, "action")
+    assert client.get("/addon/api/status", headers=as_("alice")).status_code == 200
 
 
-def test_invalid_level_is_422(client: TestClient) -> None:
-    assert grant(client, ALICE_KEY, "owner").status_code == 422
+def test_actor_refuses_read_and_accepts_action(client: TestClient, fake: Fake) -> None:
+    grant(client, ALICE_KEY, "read")
+    assert post(client, "/power", "alice", json={"signal": "start"}).status_code == 403
+    assert fake.signals == []
+    grant(client, ALICE_KEY, "action")
+    assert post(client, "/power", "alice", json={"signal": "start"}).status_code in (200, 409)
 
 
 def test_docs_are_disabled(client: TestClient) -> None:
@@ -375,21 +374,15 @@ def test_key_never_in_responses_or_logs(
     client: TestClient, fake: Fake, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    bodies = [grant(client, ALICE_KEY, "read").text]
+    grant(client, ALICE_KEY, "read")
+    bodies = []
     for status in (200, 403, 404, 500):
         fake.pelican_status = status
         bodies.append(client.get("/addon/api/status", headers=as_("admin")).text)
-    for path in ("/me", "/journal", "/server/access"):
+    for path in ("/me", "/journal"):
         bodies.append(client.get(f"/addon/api{path}", headers=as_("admin")).text)
     assert all(KEY not in b for b in bodies)
     assert all(KEY not in r.getMessage() and KEY not in str(r.args) for r in caplog.records)
-
-
-def test_site_users_without_created_at_is_503(client: TestClient, fake: Fake) -> None:
-    for created in (None, ""):
-        fake.users = [{"id": 7, "username": "alice", "created_at": created}]
-        assert client.get("/addon/api/server/access", headers=as_("admin")).status_code == 503
-        assert grant(client, f"7:{created}", "read").status_code == 503
 
 
 def post(client: TestClient, path: str, who: str = "admin", **kw: Any) -> httpx.Response:
@@ -727,7 +720,9 @@ def client_full(fake: Fake, tmp_path: Path) -> Iterator[TestClient]:
         db_path=str(tmp_path / "addon.db"),
         allowed_origin="https://site.example.test",
     )
-    with TestClient(create_app(settings, httpx.MockTransport(fake.handle))) as c:
+    app = create_app(settings, httpx.MockTransport(fake.handle))
+    app.state.fake = fake
+    with TestClient(app) as c:
         yield c
 
 
@@ -790,7 +785,9 @@ def cs(fake: Fake, tmp_path: Path) -> Iterator[TestClient]:
         chestsort_file=CS,
     )
     fake.files[CS] = CS_TEXT
-    with TestClient(create_app(settings, httpx.MockTransport(fake.handle))) as c:
+    app = create_app(settings, httpx.MockTransport(fake.handle))
+    app.state.fake = fake
+    with TestClient(app) as c:
         yield c
 
 
@@ -851,6 +848,46 @@ def test_unreadable_file_is_502(cs: TestClient, fake: Fake) -> None:
     del fake.files[CS]
     resp = cs.get("/addon/api/chestsort", headers=as_("admin"))
     assert (resp.status_code, resp.json()) == (502, {"detail": "pelican_not_found"})
+
+
+_CS_HASH = chestsort.sha256(CS_TEXT)
+WRITES = [
+    ("server", "POST", "/power", {"signal": "start"}),
+    ("server", "POST", "/backups", {"confirm_full": True}),
+    ("server", "POST", f"/backups/{DL_UUID}/download", None),
+    (
+        "chestsort",
+        "PUT",
+        "/chestsort",
+        {"categories": NEW_CATS, "base_hash": _CS_HASH, "confirm": True},
+    ),
+    ("chestsort", "POST", "/chestsort/preview", {"categories": NEW_CATS}),
+    (
+        "chestsort",
+        "POST",
+        "/chestsort/restore",
+        {"name": "x", "base_hash": _CS_HASH, "confirm": True},
+    ),
+]
+
+
+@pytest.mark.parametrize("level", ["read", "action"])
+@pytest.mark.parametrize(("entry", "method", "path", "body"), WRITES)
+def test_a_level_on_the_other_entry_never_allows_a_write(
+    request: pytest.FixtureRequest,
+    fake: Fake,
+    level: str,
+    entry: str,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+) -> None:
+    client: TestClient = request.getfixturevalue("cs")  # both entries on
+    other = "chestsort" if entry == "server" else "server"
+    grant(client, ALICE_KEY, level, other)
+    resp = client.request(method, f"/addon/api{path}", headers=as_("alice", WRITE), json=body)
+    assert resp.status_code == 403
+    assert fake.pelican_calls == 0 and fake.file_ops == [] and actions(client) == []
 
 
 def test_read_and_unlisted_users_cannot_write_chestsort(cs: TestClient, fake: Fake) -> None:
@@ -1421,37 +1458,10 @@ def test_server_only_user_gets_403_on_chestsort(cs: TestClient) -> None:
     assert cs.get("/addon/api/status", headers=as_("alice")).status_code == 200
 
 
-def test_access_routes_are_separate_lists(cs: TestClient) -> None:
-    grant(cs, ALICE_KEY, "read", "server")
-    grant(cs, BOB_KEY, "action", "chestsort")
-    srv = {
-        r["username"]: r["level"]
-        for r in cs.get("/addon/api/server/access", headers=as_("admin")).json()
-    }
-    chs = {
-        r["username"]: r["level"]
-        for r in cs.get("/addon/api/chestsort/access", headers=as_("admin")).json()
-    }
-    assert srv == {"alice": "read", "bob": None}
-    assert chs == {"alice": None, "bob": "action"}
-
-
-def test_unknown_addon_is_404(client: TestClient) -> None:
-    assert client.get("/addon/api/nope/access", headers=as_("admin")).status_code == 404
-    # chestsort is disabled on the plain client fixture
-    assert client.get("/addon/api/chestsort/access", headers=as_("admin")).status_code == 404
-    assert grant(client, ALICE_KEY, "read", "chestsort").status_code == 404
-
-
-def test_access_journal_target_names_the_addon(client: TestClient) -> None:
-    grant(client, ALICE_KEY, "read")
-    rows = client.get("/addon/api/journal", headers=as_("admin")).json()
-    assert any(r["action"] == "access" and r["target"] == "server:alice" for r in rows)
-
-
 def test_me_levels(cs: TestClient) -> None:
     grant(cs, ALICE_KEY, "read", "server")
     grant(cs, ALICE_KEY, "action", "chestsort")
     me = cs.get("/addon/api/me", headers=as_("alice")).json()
     assert me["levels"] == {"server": "read", "chestsort": "action"}
     assert "level" not in me
+    assert sorted(e for e, _ in cs.app.state.fake.site_calls) == ["chestsort", "server"]  # type: ignore[attr-defined]

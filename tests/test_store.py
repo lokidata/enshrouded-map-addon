@@ -12,61 +12,11 @@ def store(tmp_path: Path) -> Store:
     return Store(str(tmp_path / "a.db"))
 
 
-def test_grant_overwrites_level(store: Store) -> None:
-    store.grant("server", "1:t", "alice", "read", "admin")
-    store.grant("server", "1:t", "alice", "action", "admin")
-    assert store.level_of("server", "1:t") == "action"
-    rows = store.list_access("server")
-    assert len(rows) == 1 and rows[0].username == "alice" and rows[0].by == "admin"
-
-
-def test_level_of_unknown_and_revoke(store: Store) -> None:
-    assert store.level_of("server", "9:x") is None
-    store.grant("server", "1:t", "alice", "read", "admin")
-    store.revoke("server", "1:t")
-    assert store.level_of("server", "1:t") is None
-
-
-def test_prune_missing_removes_only_absent(store: Store) -> None:
-    store.grant("server", "1:t", "a", "read", "admin")
-    store.grant("server", "2:t", "b", "read", "admin")
-    assert store.prune_missing("server", {"1:t"}) == ["2:t"]
-    assert [r.user_key for r in store.list_access("server")] == ["1:t"]
-
-
-def test_access_is_per_addon(store: Store) -> None:
-    store.grant("server", "1:t", "alice", "read", "admin")
-    assert store.level_of("chestsort", "1:t") is None
-    assert store.list_access("chestsort") == []
-
-
-def test_revoke_one_addon_keeps_other(store: Store) -> None:
-    store.grant("server", "1:t", "alice", "read", "admin")
-    store.grant("chestsort", "1:t", "alice", "action", "admin")
-    store.revoke("server", "1:t")
-    assert store.level_of("server", "1:t") is None
-    assert store.level_of("chestsort", "1:t") == "action"
-
-
-def test_prune_missing_only_touches_given_addon(store: Store) -> None:
-    store.grant("server", "2:t", "b", "read", "admin")
-    store.grant("chestsort", "2:t", "b", "read", "admin")
-    assert store.prune_missing("server", set()) == ["2:t"]
-    assert store.level_of("chestsort", "2:t") == "read"
-
-
-def test_old_access_table_is_ignored(tmp_path: Path) -> None:
-    path = str(tmp_path / "old.db")
-    db = sqlite3.connect(path)
-    db.execute(
-        "CREATE TABLE access (user_key TEXT PRIMARY KEY, username TEXT NOT NULL,"
-        " level TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL)"
-    )
-    db.execute("INSERT INTO access VALUES ('1:t', 'alice', 'action', 'admin', 'x')")
-    db.commit()
-    db.close()
-    s = Store(path)
-    assert s.list_access("server") == [] and s.list_access("chestsort") == []
+def test_access_table_is_left_dormant(store: Store, tmp_path: Path) -> None:
+    with sqlite3.connect(str(tmp_path / "a.db")) as c:
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert "access_v2" in tables
+    assert not any(hasattr(store, n) for n in ("grant", "revoke", "level_of", "list_access"))
 
 
 def test_log_and_purge(store: Store) -> None:
