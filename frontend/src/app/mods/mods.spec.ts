@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing';
+import { ApiBase } from '../core/api';
 import { I18n } from '../core/i18n';
 import { Session } from '../core/session';
 import { fakes, me } from '../../testing/fakes';
@@ -28,6 +29,16 @@ describe('Mods', () => {
   afterEach(() => {
     TestBed.resetTestingModule();
     localStorage.clear();
+  });
+
+  it('takes the base attribute, also after the first render, and ignores a bad one', () => {
+    const { fx } = setup({ me: me() });
+    fx.componentRef.setInput('base', '/addon/main/');
+    fx.detectChanges();
+    expect(TestBed.inject(ApiBase).base()).toBe('/addon/main/');
+    fx.componentRef.setInput('base', '//evil.test/');
+    fx.detectChanges();
+    expect(TestBed.inject(ApiBase).base()).toBe('/addon/main/');
   });
 
   it('opens the mods text and closes the editor', () => {
