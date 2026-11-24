@@ -1,5 +1,6 @@
 """The manifest the site reads (api_version 2). Public: the site filters by level."""
 
+import tomllib
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
@@ -13,11 +14,11 @@ NAMES = {
 }
 DESCRIPTIONS = {
     "server": {
-        "fr": "Etat du serveur, sauvegardes et redemarrage.",
+        "fr": "État du serveur, sauvegardes et redémarrage.",
         "en": "Server status, backups and restart.",
     },
     "chestsort": {
-        "fr": "Edition des categories de tri des coffres.",
+        "fr": "Édition des catégories de tri des coffres.",
         "en": "Edit the chest sorting categories.",
     },
 }
@@ -28,6 +29,12 @@ def _own_version() -> str:
     try:
         return version("enshrouded-map-addon")
     except PackageNotFoundError:
+        pass
+    # The image runs from /srv/src without installing the package: read pyproject.toml next to src/.
+    try:
+        text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+        return str(tomllib.loads(text)["project"]["version"])
+    except (OSError, KeyError, ValueError):
         return "0.0.0"
 
 

@@ -1,4 +1,6 @@
 import re
+import tomllib
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from typing import Any
 
@@ -6,6 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from addon import manifest
 from addon.api import create_app
 from addon.config import Settings
 from addon.manifest import build_manifest
@@ -88,3 +91,22 @@ def test_manifest_route_omits_chestsort_when_unset(tmp_path: Path, web: Path) ->
     app = create_app(settings(tmp_path, False), httpx.MockTransport(lambda r: httpx.Response(500)))
     with TestClient(app) as c:
         assert [e["id"] for e in c.get("/addon/api/manifest").json()["entries"]] == ["server"]
+
+
+def test_version_is_read_from_pyproject_when_the_package_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(_: str) -> str:
+        raise PackageNotFoundError
+
+    monkeypatch.setattr(manifest, "version", missing)
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    expected = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+    assert manifest._own_version() == expected != "0.0.0"
+
+
+def test_french_descriptions_keep_their_accents() -> None:
+    texts = " ".join(d["fr"] for d in manifest.DESCRIPTIONS.values())
+    assert (
+        "État" in texts and "redémarrage" in texts and "Édition" in texts and "catégories" in texts
+    )
