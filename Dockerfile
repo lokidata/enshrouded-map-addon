@@ -28,6 +28,7 @@ COPY --from=build /opt/venv /opt/venv
 RUN /opt/venv/bin/python -m pip uninstall -y pip && /usr/local/bin/python -m pip uninstall -y pip
 WORKDIR /srv
 COPY src ./src
+COPY pyproject.toml ./
 COPY --from=web /web/frontend/dist/browser ./frontend/dist/browser
 USER app
 VOLUME /data
